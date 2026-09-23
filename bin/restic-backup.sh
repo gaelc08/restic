@@ -14,6 +14,15 @@
 # files could not be read" warning (its exit code 3), 1 if any share
 # failed outright. See
 # https://restic.readthedocs.io/en/latest/040_backup.html#exit-status-codes
+#
+# Usage: restic-backup.sh [--manual]
+#   --manual tags the run "manual" instead of RESTIC_BACKUP_TAG
+#   ("scheduled" by default). Systemd gives no reliable way to tell a
+#   timer-triggered start apart from an admin running `systemctl
+#   start restic-backup.service` - both look identical from inside the
+#   service - so this is opt-in rather than auto-detected: pass
+#   --manual when you deliberately want an ad-hoc run labeled as such,
+#   e.g. `sudo /opt/restic/bin/restic-backup.sh --manual`.
 
 set -uo pipefail
 
@@ -23,8 +32,13 @@ source "${SCRIPT_DIR}/restic-common.sh"
 
 LOG_FILE="${BACKUP_LOG_FILE:-${LOG_DIR}/backup.log}"
 
+RUN_TAG="${RESTIC_BACKUP_TAG:-scheduled}"
+if [[ "${1:-}" == "--manual" ]]; then
+    RUN_TAG="manual"
+fi
+
 START_TS=$(date +%s)
-log_info "===== restic backup starting (repo: ${RESTIC_REPOSITORY}) ====="
+log_info "===== restic backup starting (repo: ${RESTIC_REPOSITORY}, run tag: ${RUN_TAG}) ====="
 
 parse_shares_file
 if ! check_shares_mounted; then
@@ -53,7 +67,7 @@ for i in "${!VALID_SHARE_PATHS[@]}"; do
         "${RESTIC_GLOBAL_ARGS[@]}"
         --read-concurrency "$RESTIC_READ_CONCURRENCY"
         --one-file-system
-        --tag "${RESTIC_BACKUP_TAG:-scheduled}"
+        --tag "${RUN_TAG}"
         --tag "share:${share_name}"
         --tag "policy:${policy}"
     )

@@ -263,3 +263,17 @@ To run a job on demand outside its schedule:
 sudo systemctl start restic-backup.service
 sudo systemctl start restic-maintenance.service
 ```
+
+Snapshots created this way still get the `RESTIC_BACKUP_TAG` value
+(`"scheduled"` by default) - systemd has no way to tell "the timer
+fired this" apart from "an admin ran `systemctl start`", so the tag
+doesn't change based on how the service was started. To run an ad-hoc
+backup and have it clearly labeled as such instead, bypass systemd and
+invoke the script directly with `--manual`:
+
+```sh
+sudo /opt/restic/bin/restic-backup.sh --manual
+```
+
+which tags the resulting snapshot(s) `manual` instead of `scheduled`
+(the per-share `share:<name>` and `policy:<name>` tags are unaffected).
