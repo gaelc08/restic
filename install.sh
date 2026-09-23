@@ -26,6 +26,18 @@ install -m 0755 "${SCRIPT_DIR}/bin/restic-maintenance.sh" /opt/restic/bin/restic
 install -m 0755 "${SCRIPT_DIR}/bin/restic-snapshots.sh"   /opt/restic/bin/restic-snapshots.sh
 install -m 0644 "${SCRIPT_DIR}/bin/restic-common.sh"      /opt/restic/bin/restic-common.sh
 
+echo "==> Creating cache/tmp directories"
+# These must exist on disk *before* the systemd services ever start:
+# ReadWritePaths= in restic-backup.service / restic-maintenance.service
+# bind-mounts them into the service's private mount namespace before
+# ExecStart runs, and unlike the script's own `mkdir -p` (which only
+# runs after that), systemd will not create them for you - it fails
+# with "226/NAMESPACE" instead. If you change RESTIC_CACHE_DIR or
+# RESTIC_TMP_DIR in restic.env away from these defaults, update
+# ReadWritePaths= in both unit files to match and create the new
+# directories the same way.
+mkdir -p /opt/restic/restic-cache /opt/restic/restic-tmp
+
 echo "==> Installing config to /etc/restic (existing files left untouched)"
 mkdir -p /etc/restic
 for f in restic.env secrets.env shares.conf retention-policies.conf excludes.txt; do

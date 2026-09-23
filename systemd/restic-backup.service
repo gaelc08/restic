@@ -30,6 +30,12 @@ SyslogIdentifier=restic-backup
 
 # Basic hardening. Loosen ProtectSystem/ReadWritePaths if the service
 # user needs write access outside of the cache/tmp/log directories.
+# IMPORTANT: every path listed here must already exist on disk before
+# the service starts - systemd bind-mounts them into the sandbox
+# before ExecStart runs and will NOT create them (fails with
+# "226/NAMESPACE" if one is missing). If you change RESTIC_CACHE_DIR
+# or RESTIC_TMP_DIR in restic.env, update this list and mkdir the new
+# paths to match.
 NoNewPrivileges=true
 ProtectSystem=full
 ReadWritePaths=/opt/restic/restic-cache /opt/restic/restic-tmp /var/log/restic

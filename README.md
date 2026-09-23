@@ -130,6 +130,18 @@ variable for scratch space - there is no native `RESTIC_TMP_DIR`.
 in the config file, and exports it as `TMPDIR` internally so restic
 picks it up correctly.
 
+**If you change `RESTIC_CACHE_DIR` or `RESTIC_TMP_DIR`** away from the
+`/opt/restic/restic-cache` / `/opt/restic/restic-tmp` defaults, also
+update `ReadWritePaths=` in both `systemd/restic-backup.service` and
+`systemd/restic-maintenance.service` to match, and `mkdir` the new
+paths yourself. Systemd bind-mounts everything in `ReadWritePaths=`
+into the service's sandbox *before* `ExecStart` runs, so - unlike the
+script's own `mkdir -p` - it never creates a missing directory; it
+just fails the unit with `226/NAMESPACE`
+("Failed to set up mount namespacing: ... No such file or
+directory"). `install.sh` creates the default paths for you, but a
+custom path is on you to create.
+
 ### Parallelism knobs
 
 Two independent settings control parallelism, per the requirement to

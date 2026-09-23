@@ -18,6 +18,12 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=restic-maintenance
 
+# IMPORTANT: every path in ReadWritePaths must already exist on disk
+# before the service starts - systemd bind-mounts them into the
+# sandbox before ExecStart runs and will NOT create them (fails with
+# "226/NAMESPACE" if one is missing). If you change RESTIC_CACHE_DIR
+# or RESTIC_TMP_DIR in restic.env, update this list and mkdir the new
+# paths to match.
 NoNewPrivileges=true
 ProtectSystem=full
 ReadWritePaths=/opt/restic/restic-cache /opt/restic/restic-tmp /var/log/restic
