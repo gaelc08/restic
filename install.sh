@@ -27,7 +27,7 @@ install -m 0644 "${SCRIPT_DIR}/bin/restic-common.sh"      /usr/local/bin/restic-
 
 echo "==> Installing config to /etc/restic (existing files left untouched)"
 mkdir -p /etc/restic
-for f in restic.env aws-credentials.env backup-paths.txt excludes.txt; do
+for f in restic.env secrets.env backup-paths.txt excludes.txt; do
     if [[ -f "/etc/restic/${f}" ]]; then
         echo "    skip existing /etc/restic/${f}"
     else
@@ -35,13 +35,8 @@ for f in restic.env aws-credentials.env backup-paths.txt excludes.txt; do
         echo "    installed /etc/restic/${f} (edit before enabling the timers)"
     fi
 done
-chown root:root /etc/restic/aws-credentials.env 2>/dev/null || true
-chmod 600 /etc/restic/aws-credentials.env 2>/dev/null || true
-
-if [[ ! -f /etc/restic/password ]]; then
-    echo "    NOTE: /etc/restic/password does not exist yet - create it with your"
-    echo "          restic repository password, then: chmod 600 /etc/restic/password"
-fi
+chown root:root /etc/restic/secrets.env 2>/dev/null || true
+chmod 600 /etc/restic/secrets.env 2>/dev/null || true
 
 echo "==> Creating log directory"
 mkdir -p /var/log/restic
@@ -61,12 +56,11 @@ cat <<'EOF'
 
 ==> Install complete. Before enabling the timers:
     1. Edit /etc/restic/restic.env        (repository, pack size, parallelism, retention, ...)
-    2. Edit /etc/restic/aws-credentials.env
-    3. Create /etc/restic/password         (chmod 600) with the repo password
-    4. Edit /etc/restic/backup-paths.txt   (mount points to back up)
-    5. Edit /etc/restic/excludes.txt as needed
-    6. If the repository is new:
-         set -a; source /etc/restic/restic.env; source /etc/restic/aws-credentials.env; set +a
+    2. Edit /etc/restic/secrets.env       (chmod 600 - repo password + AWS credentials)
+    3. Edit /etc/restic/backup-paths.txt  (mount points to back up)
+    4. Edit /etc/restic/excludes.txt as needed
+    5. If the repository is new:
+         set -a; source /etc/restic/restic.env; source /etc/restic/secrets.env; set +a
          restic init --pack-size "$RESTIC_PACK_SIZE" \
              -o s3.storage-class="$RESTIC_S3_STORAGE_CLASS"
 

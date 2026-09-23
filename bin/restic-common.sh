@@ -14,17 +14,16 @@ fi
 # shellcheck disable=SC1090
 source "$RESTIC_ENV_FILE"
 
-if [[ -n "${AWS_CREDENTIALS_FILE:-}" ]]; then
-    if [[ ! -r "$AWS_CREDENTIALS_FILE" ]]; then
-        echo "FATAL: cannot read AWS credentials file $AWS_CREDENTIALS_FILE" >&2
-        exit 1
-    fi
-    # shellcheck disable=SC1090
-    source "$AWS_CREDENTIALS_FILE"
+: "${RESTIC_SECRETS_FILE:?RESTIC_SECRETS_FILE must be set in $RESTIC_ENV_FILE}"
+if [[ ! -r "$RESTIC_SECRETS_FILE" ]]; then
+    echo "FATAL: cannot read secrets file $RESTIC_SECRETS_FILE" >&2
+    exit 1
 fi
+# shellcheck disable=SC1090
+source "$RESTIC_SECRETS_FILE"
 
 : "${RESTIC_REPOSITORY:?RESTIC_REPOSITORY must be set in $RESTIC_ENV_FILE}"
-: "${RESTIC_PASSWORD_FILE:?RESTIC_PASSWORD_FILE must be set in $RESTIC_ENV_FILE}"
+: "${RESTIC_PASSWORD:?RESTIC_PASSWORD must be set in $RESTIC_SECRETS_FILE}"
 : "${RESTIC_CACHE_DIR:?RESTIC_CACHE_DIR must be set in $RESTIC_ENV_FILE}"
 : "${RESTIC_TMP_DIR:?RESTIC_TMP_DIR must be set in $RESTIC_ENV_FILE}"
 : "${LOG_DIR:?LOG_DIR must be set in $RESTIC_ENV_FILE}"
@@ -44,7 +43,7 @@ mkdir -p "$RESTIC_CACHE_DIR" "$RESTIC_TMP_DIR" "$LOG_DIR" "$(dirname "$RESTIC_LO
 export TMPDIR="$RESTIC_TMP_DIR"
 export RESTIC_CACHE_DIR
 export RESTIC_REPOSITORY
-export RESTIC_PASSWORD_FILE
+export RESTIC_PASSWORD
 export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-}"
 export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-}"
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-}"

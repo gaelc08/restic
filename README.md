@@ -40,9 +40,10 @@ install.sh  Installs everything above onto this host
     the lock, then fails loudly (non-zero exit, logged) if maintenance
     still hasn't released it.
 - Both scripts source `/etc/restic/restic.env` (and
-  `/etc/restic/aws-credentials.env`) for configuration, and log every
-  run to `/var/log/restic/{backup,maintenance}.log` as well as the
-  systemd journal (`journalctl -u restic-backup.service`).
+  `/etc/restic/secrets.env`, chmod 600, holding the repo password and
+  AWS credentials together) for configuration, and log every run to
+  `/var/log/restic/{backup,maintenance}.log` as well as the systemd
+  journal (`journalctl -u restic-backup.service`).
 - `restic-snapshots.sh` is a standalone script (and sourceable shell
   function) to list snapshots on demand.
 
@@ -74,19 +75,18 @@ Then:
    RESTIC_TMP_DIR="/opt/restic/restic-tmp"
    RESTIC_PACK_SIZE=64
    ```
-2. Edit `/etc/restic/aws-credentials.env` with your access key/secret
-   (ideally a dedicated IAM user scoped to just this bucket/prefix).
-3. Create `/etc/restic/password` (chmod 600) with the repository
-   password.
-4. Edit `/etc/restic/backup-paths.txt` with the mount points to back
+2. Edit `/etc/restic/secrets.env` (chmod 600, root-only) with the
+   repository password and your AWS access key/secret (ideally a
+   dedicated IAM user scoped to just this bucket/prefix).
+3. Edit `/etc/restic/backup-paths.txt` with the mount points to back
    up, and `/etc/restic/excludes.txt` as needed.
-5. If the repository doesn't exist yet, initialize it with the same
+4. If the repository doesn't exist yet, initialize it with the same
    pack size and storage class the automation will use:
    ```sh
-   set -a; source /etc/restic/restic.env; source /etc/restic/aws-credentials.env; set +a
+   set -a; source /etc/restic/restic.env; source /etc/restic/secrets.env; set +a
    restic init --pack-size "$RESTIC_PACK_SIZE" -o s3.storage-class="$RESTIC_S3_STORAGE_CLASS"
    ```
-6. Enable and start the daily timers:
+5. Enable and start the daily timers:
    ```sh
    systemctl enable --now restic-backup.timer
    systemctl enable --now restic-maintenance.timer
@@ -97,8 +97,7 @@ Then:
 | Variable | Purpose |
 |---|---|
 | `RESTIC_REPOSITORY` | `s3:...` repository URL |
-| `RESTIC_PASSWORD_FILE` | path to the repo password file |
-| `AWS_CREDENTIALS_FILE` | path to the separate AWS secrets file |
+| `RESTIC_SECRETS_FILE` | path to the combined password + AWS credentials file |
 | `RESTIC_S3_STORAGE_CLASS` | S3 storage class for written objects (`GLACIER`) |
 | `RESTIC_S3_CONNECTIONS` | concurrent S3 connections (backend parallelism, `-o s3.connections`) |
 | `RESTIC_PACK_SIZE` | target pack size in MiB (`--pack-size`) |
