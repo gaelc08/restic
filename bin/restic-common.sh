@@ -35,11 +35,12 @@ RESTIC_S3_CONNECTIONS="${RESTIC_S3_CONNECTIONS:-10}"
 RESTIC_S3_STORAGE_CLASS="${RESTIC_S3_STORAGE_CLASS:-GLACIER}"
 RESTIC_JSON_LOG="${RESTIC_JSON_LOG:-true}"
 REQUIRE_MOUNTED="${REQUIRE_MOUNTED:-true}"
+RESTIC_LOCK_FILE="${RESTIC_LOCK_FILE:-/run/restic/restic.lock}"
 
 # restic itself does not read RESTIC_TMP_DIR; it (and the Go runtime)
 # use TMPDIR for scratch space. Export it under the standard name so
 # operators can keep using the RESTIC_TMP_DIR name in restic.env.
-mkdir -p "$RESTIC_CACHE_DIR" "$RESTIC_TMP_DIR" "$LOG_DIR"
+mkdir -p "$RESTIC_CACHE_DIR" "$RESTIC_TMP_DIR" "$LOG_DIR" "$(dirname "$RESTIC_LOCK_FILE")"
 export TMPDIR="$RESTIC_TMP_DIR"
 export RESTIC_CACHE_DIR
 export RESTIC_REPOSITORY
@@ -79,6 +80,34 @@ log_error() { log "ERROR" "$@" >&2; }
 die() {
     log_error "$@"
     exit 1
+}
+
+# --- locking -------------------------------------------------------------
+#
+# Backup and maintenance must never run at the same time against the
+# same repository (maintenance prunes/rewrites the same pack files a
+# concurrent backup might be writing). Both jobs take the same
+# exclusive lock file before touching the repository.
+#
+# acquire_lock <timeout_seconds>
+#   timeout_seconds = 0  -> try once, return immediately if already held
+#   timeout_seconds > 0  -> wait up to that many seconds for the lock
+#
+# Returns 0 if the lock was acquired (held for the rest of the
+# process's lifetime, released automatically on exit), 1 otherwise.
+acquire_lock() {
+    local timeout="${1:-0}"
+
+    exec {RESTIC_LOCK_FD}>"$RESTIC_LOCK_FILE" || {
+        log_error "cannot open lock file $RESTIC_LOCK_FILE"
+        return 1
+    }
+
+    if [[ "$timeout" -eq 0 ]]; then
+        flock -n "$RESTIC_LOCK_FD"
+    else
+        flock -w "$timeout" "$RESTIC_LOCK_FD"
+    fi
 }
 
 # Verify every path listed in BACKUP_PATHS_FILE is an active mount

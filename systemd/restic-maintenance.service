@@ -21,6 +21,12 @@ SyslogIdentifier=restic-maintenance
 NoNewPrivileges=true
 ProtectSystem=full
 ReadWritePaths=/opt/restic/restic-cache /opt/restic/restic-tmp /var/log/restic
+# /run/restic/restic.lock - shared with restic-backup.service so the
+# two never run against the repository at the same time. If the lock
+# is already held (a backup is still running), this service exits 0
+# immediately without doing anything - see bin/restic-maintenance.sh.
+RuntimeDirectory=restic
+RuntimeDirectoryPreserve=yes
 
 TimeoutStartSec=0
 

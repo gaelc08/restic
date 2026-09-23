@@ -2,9 +2,10 @@
 Description=Run restic backup of mounted shares daily
 
 [Timer]
-# Daily at 01:00 local time. Adjust to fit your maintenance window;
-# keep it earlier than restic-maintenance.timer so forget/prune runs
-# against the freshest snapshot.
+# Daily at 01:00 local time. restic-maintenance.timer fires at 00:00
+# (i.e. just before this, at the end of the previous day's cycle), so
+# under normal conditions it never overlaps this job; the lock in
+# bin/restic-common.sh (acquire_lock) is the actual guarantee.
 OnCalendar=*-*-* 01:00:00
 # Spread real start time over 10 minutes to avoid every host in a
 # fleet hitting the S3 endpoint at exactly the same second.

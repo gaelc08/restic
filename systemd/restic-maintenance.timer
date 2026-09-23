@@ -2,11 +2,15 @@
 Description=Run restic maintenance (forget/prune/check) daily
 
 [Timer]
-# Daily at 04:00 local time - after restic-backup.timer (01:00 +
-# up to 10 min random delay) is expected to have finished. Widen the
-# gap if backups regularly take longer than ~3 hours.
-OnCalendar=*-*-* 04:00:00
-RandomizedDelaySec=600
+# Daily at 00:00 (midnight) local time - the last job of the day,
+# roughly 23 hours after restic-backup.timer's 01:00 start, giving the
+# backup as much of the day as possible to finish. This is a
+# convenience, not a hard guarantee: restic-maintenance.service takes
+# the same lock (/run/restic/restic.lock) as restic-backup.service
+# and exits immediately without doing anything if a backup is still
+# running when it fires - see bin/restic-maintenance.sh.
+OnCalendar=*-*-* 00:00:00
+RandomizedDelaySec=300
 Persistent=true
 
 [Install]

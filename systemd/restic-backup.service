@@ -33,6 +33,10 @@ SyslogIdentifier=restic-backup
 NoNewPrivileges=true
 ProtectSystem=full
 ReadWritePaths=/opt/restic/restic-cache /opt/restic/restic-tmp /var/log/restic
+# /run/restic/restic.lock - shared with restic-maintenance.service so
+# the two never run against the repository at the same time.
+RuntimeDirectory=restic
+RuntimeDirectoryPreserve=yes
 
 TimeoutStartSec=0
 

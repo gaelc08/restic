@@ -24,10 +24,21 @@ install.sh  Installs everything above onto this host
   configured share is actually mounted, then runs `restic backup`
   against all of them in one snapshot-per-run.
 - **restic-maintenance.timer** fires **restic-maintenance.service**
-  daily at 04:00, which runs `/usr/local/bin/restic-maintenance.sh`:
-  applies the retention policy and prunes
-  (`restic forget --prune --max-repack-size 0`), then an optional
-  metadata-only `restic check`.
+  daily at 00:00 (midnight, the last job of the day), which runs
+  `/usr/local/bin/restic-maintenance.sh`: applies the retention policy
+  and prunes (`restic forget --prune --max-repack-size 0`), then an
+  optional metadata-only `restic check`.
+- **Backup and maintenance never run at the same time.** Both scripts
+  take the same exclusive lock (`RESTIC_LOCK_FILE`,
+  `/run/restic/restic.lock` by default) before touching the
+  repository:
+  - if maintenance fires while a backup is still running, it logs
+    that, exits immediately without doing anything, and simply tries
+    again at its next scheduled run;
+  - if a backup fires while maintenance is still finishing up, it
+    waits up to `RESTIC_BACKUP_LOCK_TIMEOUT` seconds (default 300) for
+    the lock, then fails loudly (non-zero exit, logged) if maintenance
+    still hasn't released it.
 - Both scripts source `/etc/restic/restic.env` (and
   `/etc/restic/aws-credentials.env`) for configuration, and log every
   run to `/var/log/restic/{backup,maintenance}.log` as well as the
@@ -39,8 +50,8 @@ install.sh  Installs everything above onto this host
 
 - `restic` (recent enough to support `--pack-size`, `--read-concurrency`
   and `-o s3.connections` / `-o s3.storage-class`)
-- `bash`, `systemd`, `logrotate`, `mountpoint` (util-linux, almost
-  always already present)
+- `bash`, `systemd`, `logrotate`, `mountpoint`, `flock` (util-linux,
+  almost always already present)
 - `jq`, only needed for `restic-snapshots.sh --latest-id`
 
 ## Install
@@ -101,6 +112,8 @@ Then:
 | `RESTIC_KEEP_DAILY/WEEKLY/MONTHLY/YEARLY` | retention (see below) |
 | `RESTIC_MAINTENANCE_EXTRA_ARGS` | extra flags for `forget --prune` (default `--max-repack-size 0`, required for Glacier/tape) |
 | `RESTIC_RUN_CHECK` | run metadata-only `restic check` after prune |
+| `RESTIC_LOCK_FILE` | shared lock preventing backup/maintenance overlap |
+| `RESTIC_BACKUP_LOCK_TIMEOUT` | seconds backup waits for the lock before failing |
 | `LOG_DIR`, `*_LOG_FILE` | log locations |
 | `RESTIC_JSON_LOG` | emit `restic backup --json` progress into the log |
 

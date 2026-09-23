@@ -24,6 +24,13 @@ if ! check_backup_paths; then
 fi
 log_info "backup paths: ${VALID_BACKUP_PATHS[*]}"
 
+RESTIC_BACKUP_LOCK_TIMEOUT="${RESTIC_BACKUP_LOCK_TIMEOUT:-300}"
+if ! acquire_lock "$RESTIC_BACKUP_LOCK_TIMEOUT"; then
+    log_error "===== restic backup aborted: could not acquire lock $RESTIC_LOCK_FILE within ${RESTIC_BACKUP_LOCK_TIMEOUT}s (maintenance running?) ====="
+    exit 1
+fi
+log_info "acquired lock $RESTIC_LOCK_FILE"
+
 BACKUP_ARGS=(
     backup
     "${RESTIC_GLOBAL_ARGS[@]}"

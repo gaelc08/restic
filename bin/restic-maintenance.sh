@@ -25,6 +25,13 @@ LOG_FILE="${MAINTENANCE_LOG_FILE:-${LOG_DIR}/maintenance.log}"
 START_TS=$(date +%s)
 log_info "===== restic maintenance starting (repo: ${RESTIC_REPOSITORY}) ====="
 
+if ! acquire_lock 0; then
+    log_warn "could not acquire lock $RESTIC_LOCK_FILE (a backup is still running); skipping this maintenance run, will retry at the next scheduled time"
+    log_info "===== restic maintenance skipped ====="
+    exit 0
+fi
+log_info "acquired lock $RESTIC_LOCK_FILE"
+
 : "${RESTIC_KEEP_DAILY:=30}"
 : "${RESTIC_KEEP_WEEKLY:=12}"
 : "${RESTIC_KEEP_MONTHLY:=12}"
