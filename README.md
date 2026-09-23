@@ -242,12 +242,25 @@ readable so daily operations never need a Glacier restore.
 ## Listing snapshots
 
 ```sh
-/opt/restic/bin/restic-snapshots.sh                    # all snapshots
+/opt/restic/bin/restic-snapshots.sh                    # snapshots grouped by share
 /opt/restic/bin/restic-snapshots.sh --host myhost
 /opt/restic/bin/restic-snapshots.sh --path /mnt/share-finance
-/opt/restic/bin/restic-snapshots.sh --json
+/opt/restic/bin/restic-snapshots.sh --json              # flat, ungrouped, for scripting
 /opt/restic/bin/restic-snapshots.sh --latest-id         # just the newest snapshot's short ID
 ```
+
+By default this adds `--group-by paths`, so restic prints a header
+naming each share's path before listing that share's snapshots
+underneath it - rather than one flat table where you have to spot the
+right `share:<name>` tag in a crowded `Tags` column. Since every share
+is backed up as its own snapshot, grouping by path is effectively
+grouping by share (the exact header wording/format is restic's own and
+varies a bit by version, but it always names the path(s) in that
+group before the table for it).
+
+Pass your own `--group-by` to override this, or `--json` to get
+restic's normal flat (ungrouped) array back for scripting - both skip
+the default grouping so existing automation isn't affected.
 
 Any flags accepted by `restic snapshots` can be passed through
 directly. It can also be sourced to get a `restic_list_snapshots()`
