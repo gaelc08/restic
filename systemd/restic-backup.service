@@ -12,7 +12,7 @@ ConditionPathExists=/etc/restic/restic.env
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/restic/restic.env
-ExecStart=/usr/local/bin/restic-backup.sh
+ExecStart=/opt/restic/bin/restic-backup.sh
 
 # Run as a low-priority, low-io-priority background job so it doesn't
 # starve interactive workloads on the host.

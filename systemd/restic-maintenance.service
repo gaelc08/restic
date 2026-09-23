@@ -8,7 +8,7 @@ ConditionPathExists=/etc/restic/restic.env
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/restic/restic.env
-ExecStart=/usr/local/bin/restic-maintenance.sh
+ExecStart=/opt/restic/bin/restic-maintenance.sh
 
 Nice=10
 IOSchedulingClass=best-effort

@@ -9,7 +9,7 @@ via systemd services and timers. Built against
 
 ```
 config/     Example config files - copy to /etc/restic/, then edit
-bin/        The actual scripts (installed to /usr/local/bin)
+bin/        The actual scripts (installed to /opt/restic/bin)
 systemd/    Service + timer units (installed to /etc/systemd/system)
 logrotate/  Log rotation for /var/log/restic
 docs/       Notes on the S3 Glacier specifics
@@ -20,14 +20,14 @@ install.sh  Installs everything above onto this host
 
 - **restic-backup.timer** fires **restic-backup.service** daily at
   01:00 (+ up to 10 min random delay), which runs
-  `/usr/local/bin/restic-backup.sh`. That script verifies every
+  `/opt/restic/bin/restic-backup.sh`. That script verifies every
   configured share is actually mounted, then backs up **each share as
   its own `restic backup` call** - one snapshot per share, per run
   (not one combined multi-path snapshot) - so each can carry its own
   retention policy.
 - **restic-maintenance.timer** fires **restic-maintenance.service**
   daily at 00:00 (midnight, the last job of the day), which runs
-  `/usr/local/bin/restic-maintenance.sh`: applies **each share's own
+  `/opt/restic/bin/restic-maintenance.sh`: applies **each share's own
   retention policy** (`restic forget --path <share> --keep-...`, once
   per share), then a single repository-wide `restic prune
   --max-repack-size 0`, then an optional metadata-only `restic check`.
@@ -206,11 +206,11 @@ readable so daily operations never need a Glacier restore.
 ## Listing snapshots
 
 ```sh
-/usr/local/bin/restic-snapshots.sh                    # all snapshots
-/usr/local/bin/restic-snapshots.sh --host myhost
-/usr/local/bin/restic-snapshots.sh --path /mnt/share-finance
-/usr/local/bin/restic-snapshots.sh --json
-/usr/local/bin/restic-snapshots.sh --latest-id         # just the newest snapshot's short ID
+/opt/restic/bin/restic-snapshots.sh                    # all snapshots
+/opt/restic/bin/restic-snapshots.sh --host myhost
+/opt/restic/bin/restic-snapshots.sh --path /mnt/share-finance
+/opt/restic/bin/restic-snapshots.sh --json
+/opt/restic/bin/restic-snapshots.sh --latest-id         # just the newest snapshot's short ID
 ```
 
 Any flags accepted by `restic snapshots` can be passed through
@@ -218,7 +218,7 @@ directly. It can also be sourced to get a `restic_list_snapshots()`
 shell function for use in other scripts:
 
 ```sh
-RESTIC_SNAPSHOTS_SOURCED=1 source /usr/local/bin/restic-snapshots.sh
+RESTIC_SNAPSHOTS_SOURCED=1 source /opt/restic/bin/restic-snapshots.sh
 restic_list_snapshots --json --host myhost
 ```
 
@@ -242,7 +242,7 @@ systemctl status restic-backup.service
 systemctl status restic-maintenance.service
 journalctl -u restic-backup.service -n 100
 tail -f /var/log/restic/backup.log
-/usr/local/bin/restic-snapshots.sh
+/opt/restic/bin/restic-snapshots.sh
 ```
 
 To run a job on demand outside its schedule:

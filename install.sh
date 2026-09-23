@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs the restic backup automation onto this host:
-#   - copies bin/*.sh to /usr/local/bin
+#   - copies bin/*.sh to /opt/restic/bin
 #   - copies config/*.example to /etc/restic/* (only if not already present)
 #   - installs the systemd units and logrotate config
 #   - creates /var/log/restic and reloads systemd
@@ -13,17 +13,18 @@
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
-    echo "This script must be run as root (it writes to /etc, /usr/local/bin, /etc/systemd)." >&2
+    echo "This script must be run as root (it writes to /etc, /opt/restic, /etc/systemd)." >&2
     exit 1
 fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
-echo "==> Installing scripts to /usr/local/bin"
-install -m 0755 "${SCRIPT_DIR}/bin/restic-backup.sh"      /usr/local/bin/restic-backup.sh
-install -m 0755 "${SCRIPT_DIR}/bin/restic-maintenance.sh" /usr/local/bin/restic-maintenance.sh
-install -m 0755 "${SCRIPT_DIR}/bin/restic-snapshots.sh"   /usr/local/bin/restic-snapshots.sh
-install -m 0644 "${SCRIPT_DIR}/bin/restic-common.sh"      /usr/local/bin/restic-common.sh
+echo "==> Installing scripts to /opt/restic/bin"
+mkdir -p /opt/restic/bin
+install -m 0755 "${SCRIPT_DIR}/bin/restic-backup.sh"      /opt/restic/bin/restic-backup.sh
+install -m 0755 "${SCRIPT_DIR}/bin/restic-maintenance.sh" /opt/restic/bin/restic-maintenance.sh
+install -m 0755 "${SCRIPT_DIR}/bin/restic-snapshots.sh"   /opt/restic/bin/restic-snapshots.sh
+install -m 0644 "${SCRIPT_DIR}/bin/restic-common.sh"      /opt/restic/bin/restic-common.sh
 
 echo "==> Installing config to /etc/restic (existing files left untouched)"
 mkdir -p /etc/restic
