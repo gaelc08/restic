@@ -40,6 +40,7 @@ log_info "===== restic maintenance starting (repo: ${RESTIC_REPOSITORY}) ====="
 if ! acquire_lock 0; then
     log_warn "could not acquire lock $RESTIC_LOCK_FILE (a backup is still running); skipping this maintenance run, will retry at the next scheduled time"
     log_info "===== restic maintenance skipped ====="
+    notify maintenance skipped "restic maintenance on $(hostname -f 2>/dev/null || hostname) skipped: a backup was still running. Will retry at the next scheduled time."
     exit 0
 fi
 log_info "acquired lock $RESTIC_LOCK_FILE"
@@ -48,6 +49,7 @@ parse_shares_file
 log_info "shares: ${SHARE_PATHS[*]}"
 
 FORGET_FAILED=0
+FORGET_FAILED_SHARES=()
 
 for i in "${!SHARE_PATHS[@]}"; do
     path="${SHARE_PATHS[$i]}"
@@ -80,6 +82,7 @@ for i in "${!SHARE_PATHS[@]}"; do
     else
         log_error "share '$share_name' forget FAILED (exit $rc)"
         FORGET_FAILED=1
+        FORGET_FAILED_SHARES+=("$share_name")
     fi
 done
 
@@ -124,7 +127,15 @@ END_TS=$(date +%s)
 DURATION=$((END_TS - START_TS))
 log_info "===== restic maintenance finished in ${DURATION}s (forget failed=$FORGET_FAILED, prune exit $PRUNE_RC, check exit $CHECK_RC) ====="
 
+host="$(hostname -f 2>/dev/null || hostname)"
 if [[ $FORGET_FAILED -eq 1 || $PRUNE_RC -ne 0 || $CHECK_RC -ne 0 ]]; then
+    FAIL_PARTS=()
+    [[ $FORGET_FAILED -eq 1 ]] && FAIL_PARTS+=("forget failed for share(s): ${FORGET_FAILED_SHARES[*]}")
+    [[ $PRUNE_RC -ne 0 ]] && FAIL_PARTS+=("prune failed (exit $PRUNE_RC)")
+    [[ $CHECK_RC -ne 0 ]] && FAIL_PARTS+=("check failed (exit $CHECK_RC)")
+    IFS='; '; FAIL_SUMMARY="${FAIL_PARTS[*]}"; unset IFS
+    notify maintenance failure "restic maintenance on ${host} FAILED after ${DURATION}s: ${FAIL_SUMMARY}. See ${LOG_FILE}."
     exit 1
 fi
+notify maintenance success "restic maintenance on ${host} completed successfully in ${DURATION}s (${#SHARE_PATHS[@]} share(s))."
 exit 0

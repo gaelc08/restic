@@ -82,13 +82,37 @@ lifecycle rule.
 
 ## Restoring from Glacier
 
-`restic restore` and `restic check --read-data` need to read pack
-data. If that data is in a Glacier storage class that requires
-restoration, you must first trigger and wait for the S3 restore (e.g.
-`aws s3api restore-object`) for the relevant objects before running
-those restic commands - restic itself does not initiate or wait for
-Glacier restores. The daily jobs in this repo (per-share `backup`,
-per-share `forget`, the single `prune --max-repack-size 0`, and the
-metadata-only `check`) never need to do this, which is why they can
-safely run automatically every day even against a Glacier/tape-backed
-repository.
+`restic restore`, `restic dump`, and `restic check --read-data` all
+need to read pack data. If that data is in a Glacier storage class
+that requires restoration, you must first trigger and wait for the S3
+restore (e.g. `aws s3api restore-object`) for the relevant objects
+before running those restic commands - restic itself does not
+initiate or wait for Glacier restores. The daily jobs in this repo
+(per-share `backup`, per-share `forget`, the single `prune
+--max-repack-size 0`, and the metadata-only `check`) never need to do
+this, which is why they can safely run automatically every day even
+against a Glacier/tape-backed repository.
+
+`restic-verify.sh` (`resticctl verify`) is the one job here that does
+need to read real data - it samples a few files per share and reads
+them back with `restic dump` to prove backups are actually restorable.
+Whether that "just works" or needs an explicit restore-object step
+first depends entirely on your specific destination:
+
+- **True AWS Glacier / Glacier Deep Archive**: reads will fail (or
+  hang) until you explicitly restore the object first. `restic-verify.sh`
+  bounds each file's read with `RESTIC_VERIFY_TIMEOUT` so it fails
+  cleanly and reports it rather than hanging forever, but it cannot
+  usefully run unattended against this kind of destination without
+  extra automation (e.g. a wrapper that issues `aws s3api
+  restore-object` for the relevant keys and waits before running
+  `restic-verify.sh`) - not something this toolkit does for you today.
+- **AWS Glacier Instant Retrieval, or most on-prem S3-compatible
+  gateways backed by tape**: typically serve reads directly, with
+  some added latency, and no explicit restore step - `restic-verify.sh`
+  works as-is here.
+
+This is exactly why `restic-verify.timer` is installed but never
+auto-enabled: run `resticctl verify` manually first and see which of
+the above actually describes your setup before deciding whether (and
+how often) to schedule it.

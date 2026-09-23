@@ -10,6 +10,7 @@
 #   resticctl maintenance
 #   resticctl list [restic snapshots flags...]
 #   resticctl delete [--yes] [--no-prune] <snapshot-id...>
+#   resticctl verify [share-path]
 #   resticctl version
 #   resticctl status
 #   resticctl help
@@ -48,10 +49,20 @@ Commands:
                                   instead of explicit IDs, e.g.:
                                     resticctl delete --tag share:test --keep-last 1
 
+  verify [share-path]            Prove backups are actually restorable:
+                                  samples a few files from each share's
+                                  latest snapshot and reads them back.
+                                  With a path, verifies only that share.
+                                  Read the header in restic-verify.sh
+                                  before scheduling this - whether it's
+                                  safe to run unattended depends on your
+                                  Glacier/tape destination's read behavior.
+
   version                        Show the deployed commit (VERSION file).
 
-  status                         Show timer schedule and each service's
-                                  last run.
+  status                         Show timer schedule, each service's
+                                  last run, and the last recorded status
+                                  of every job.
 
   help                           Show this help.
 
@@ -77,6 +88,9 @@ case "$cmd" in
     delete)
         exec "${SCRIPT_DIR}/restic-forget.sh" "$@"
         ;;
+    verify)
+        exec "${SCRIPT_DIR}/restic-verify.sh" "$@"
+        ;;
     version)
         if [[ -r "${SCRIPT_DIR}/VERSION" ]]; then
             cat "${SCRIPT_DIR}/VERSION"
@@ -91,6 +105,20 @@ case "$cmd" in
         systemctl status restic-backup.service --no-pager -n 5 2>/dev/null
         echo
         systemctl status restic-maintenance.service --no-pager -n 5 2>/dev/null
+        echo
+        echo "-- last recorded run status (RESTIC_STATUS_DIR, default /var/log/restic/status) --"
+        shopt -s nullglob
+        status_files=(/var/log/restic/status/*.status)
+        shopt -u nullglob
+        if [[ ${#status_files[@]} -eq 0 ]]; then
+            echo "(none yet)"
+        else
+            for f in "${status_files[@]}"; do
+                echo "[$f]"
+                cat "$f"
+                echo
+            done
+        fi
         ;;
     help|-h|--help)
         usage

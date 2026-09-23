@@ -25,6 +25,7 @@ install -m 0755 "${SCRIPT_DIR}/bin/restic-backup.sh"      /opt/restic/bin/restic
 install -m 0755 "${SCRIPT_DIR}/bin/restic-maintenance.sh" /opt/restic/bin/restic-maintenance.sh
 install -m 0755 "${SCRIPT_DIR}/bin/restic-snapshots.sh"   /opt/restic/bin/restic-snapshots.sh
 install -m 0755 "${SCRIPT_DIR}/bin/restic-forget.sh"      /opt/restic/bin/restic-forget.sh
+install -m 0755 "${SCRIPT_DIR}/bin/restic-verify.sh"      /opt/restic/bin/restic-verify.sh
 install -m 0644 "${SCRIPT_DIR}/bin/restic-common.sh"      /opt/restic/bin/restic-common.sh
 install -m 0755 "${SCRIPT_DIR}/bin/resticctl"              /opt/restic/bin/resticctl
 
@@ -98,6 +99,8 @@ install -m 0644 "${SCRIPT_DIR}/systemd/restic-backup.service"      /etc/systemd/
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-backup.timer"        /etc/systemd/system/restic-backup.timer
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-maintenance.service" /etc/systemd/system/restic-maintenance.service
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-maintenance.timer"   /etc/systemd/system/restic-maintenance.timer
+install -m 0644 "${SCRIPT_DIR}/systemd/restic-verify.service"      /etc/systemd/system/restic-verify.service
+install -m 0644 "${SCRIPT_DIR}/systemd/restic-verify.timer"        /etc/systemd/system/restic-verify.timer
 systemctl daemon-reload
 
 cat <<'EOF'
@@ -117,6 +120,20 @@ Then enable the daily timers:
     systemctl enable --now restic-backup.timer
     systemctl enable --now restic-maintenance.timer
 
+Restore verification (resticctl verify) is installed but NOT enabled
+as a timer yet - run it manually first and see how it behaves against
+your actual Glacier/tape destination before deciding to schedule it
+(see the header comment in restic-verify.sh and docs/glacier-notes.md):
+    resticctl verify
+    # once you're happy with it:
+    systemctl enable --now restic-verify.timer
+
+Failure notifications (email/webhook) are opt-in - set
+RESTIC_NOTIFY_EMAIL and/or RESTIC_NOTIFY_WEBHOOK_URL in restic.env.
+Every job always writes a status file regardless, under
+RESTIC_STATUS_DIR (default /var/log/restic/status), for any external
+monitoring to poll.
+
 Check status any time with:
     systemctl list-timers 'restic-*'
     journalctl -u restic-backup.service -u restic-maintenance.service
@@ -126,6 +143,7 @@ Or drive everything through the resticctl CLI (installed onto PATH):
     resticctl status
     resticctl backup --manual
     resticctl maintenance
+    resticctl verify
     resticctl list --path /mnt/your-share
     resticctl delete <snapshot-id>
     resticctl version

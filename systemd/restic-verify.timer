@@ -1,0 +1,22 @@
+[Unit]
+Description=Run restic restore verification weekly
+
+[Timer]
+# Weekly, Sunday 02:00 local time - well clear of the daily
+# 00:00/01:00 maintenance/backup window.
+#
+# DO NOT enable this timer until you've run `resticctl verify` (or
+# /opt/restic/bin/restic-verify.sh) manually at least once and
+# confirmed it completes in a reasonable time against your actual
+# repository. Whether this is safe to run unattended depends on
+# whether your S3 Glacier/tape destination serves reads transparently
+# or needs an explicit restore/thaw step first - see the header
+# comment in bin/restic-verify.sh and docs/glacier-notes.md. If reads
+# need an explicit restore step, this will time out (RESTIC_VERIFY_TIMEOUT)
+# on every run instead of proving anything.
+OnCalendar=Sun *-*-* 02:00:00
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

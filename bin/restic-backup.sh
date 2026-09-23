@@ -43,6 +43,7 @@ log_info "===== restic backup starting (repo: ${RESTIC_REPOSITORY}, run tag: ${R
 parse_shares_file
 if ! check_shares_mounted; then
     log_error "===== restic backup aborted: invalid shares ====="
+    notify backup failure "restic backup on $(hostname -f 2>/dev/null || hostname) aborted: one or more configured shares are missing or unmounted. See ${LOG_FILE}."
     exit 1
 fi
 log_info "shares: ${VALID_SHARE_PATHS[*]}"
@@ -50,12 +51,15 @@ log_info "shares: ${VALID_SHARE_PATHS[*]}"
 RESTIC_BACKUP_LOCK_TIMEOUT="${RESTIC_BACKUP_LOCK_TIMEOUT:-300}"
 if ! acquire_lock "$RESTIC_BACKUP_LOCK_TIMEOUT"; then
     log_error "===== restic backup aborted: could not acquire lock $RESTIC_LOCK_FILE within ${RESTIC_BACKUP_LOCK_TIMEOUT}s (maintenance running?) ====="
+    notify backup failure "restic backup on $(hostname -f 2>/dev/null || hostname) aborted: could not acquire the repository lock within ${RESTIC_BACKUP_LOCK_TIMEOUT}s (maintenance stuck?). See ${LOG_FILE}."
     exit 1
 fi
 log_info "acquired lock $RESTIC_LOCK_FILE"
 
 FAILED=0
 WARNED=0
+FAILED_SHARES=()
+WARNED_SHARES=()
 
 for i in "${!VALID_SHARE_PATHS[@]}"; do
     path="${VALID_SHARE_PATHS[$i]}"
@@ -91,9 +95,11 @@ for i in "${!VALID_SHARE_PATHS[@]}"; do
     elif [[ $rc -eq 3 ]]; then
         log_warn "share '$share_name' backup completed with warnings (some source files could not be read, exit 3)"
         WARNED=1
+        WARNED_SHARES+=("$share_name")
     else
         log_error "share '$share_name' backup FAILED (exit $rc)"
         FAILED=1
+        FAILED_SHARES+=("$share_name")
     fi
 done
 
@@ -103,12 +109,15 @@ DURATION=$((END_TS - START_TS))
 if [[ $FAILED -eq 1 ]]; then
     RC=1
     log_error "restic backup finished in ${DURATION}s with at least one failed share"
+    notify backup failure "restic backup on $(hostname -f 2>/dev/null || hostname) FAILED for share(s): ${FAILED_SHARES[*]} (after ${DURATION}s). See ${LOG_FILE}."
 elif [[ $WARNED -eq 1 ]]; then
     RC=3
     log_warn "restic backup completed in ${DURATION}s; all shares backed up but at least one had warnings"
+    notify backup warning "restic backup on $(hostname -f 2>/dev/null || hostname) completed in ${DURATION}s with warnings for share(s): ${WARNED_SHARES[*]} (some source files could not be read). See ${LOG_FILE}."
 else
     RC=0
     log_info "restic backup completed successfully in ${DURATION}s"
+    notify backup success "restic backup on $(hostname -f 2>/dev/null || hostname) completed successfully in ${DURATION}s (${#VALID_SHARE_PATHS[@]} share(s))."
 fi
 
 log_info "===== restic backup finished (exit $RC) ====="

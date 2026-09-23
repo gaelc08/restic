@@ -1,0 +1,34 @@
+[Unit]
+Description=restic restore verification (sample-based) for S3 Glacier repository
+Documentation=https://restic.readthedocs.io/
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/restic/restic.env
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/restic/restic.env
+ExecStart=/opt/restic/bin/restic-verify.sh
+
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=restic-verify
+
+# IMPORTANT: every path in ReadWritePaths must already exist on disk
+# before the service starts - systemd bind-mounts them into the
+# sandbox before ExecStart runs and will NOT create them (fails with
+# "226/NAMESPACE" if one is missing). If you change RESTIC_CACHE_DIR
+# or RESTIC_TMP_DIR in restic.env, update this list and mkdir the new
+# paths to match.
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/opt/restic/restic-cache /opt/restic/restic-tmp /var/log/restic
+
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

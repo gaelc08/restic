@@ -35,11 +35,13 @@ RESTIC_S3_STORAGE_CLASS="${RESTIC_S3_STORAGE_CLASS:-GLACIER}"
 RESTIC_JSON_LOG="${RESTIC_JSON_LOG:-true}"
 REQUIRE_MOUNTED="${REQUIRE_MOUNTED:-true}"
 RESTIC_LOCK_FILE="${RESTIC_LOCK_FILE:-/run/restic/restic.lock}"
+RESTIC_NOTIFY_ON="${RESTIC_NOTIFY_ON:-failure}"
+RESTIC_STATUS_DIR="${RESTIC_STATUS_DIR:-/var/log/restic/status}"
 
 # restic itself does not read RESTIC_TMP_DIR; it (and the Go runtime)
 # use TMPDIR for scratch space. Export it under the standard name so
 # operators can keep using the RESTIC_TMP_DIR name in restic.env.
-mkdir -p "$RESTIC_CACHE_DIR" "$RESTIC_TMP_DIR" "$LOG_DIR" "$(dirname "$RESTIC_LOCK_FILE")"
+mkdir -p "$RESTIC_CACHE_DIR" "$RESTIC_TMP_DIR" "$LOG_DIR" "$(dirname "$RESTIC_LOCK_FILE")" "$RESTIC_STATUS_DIR"
 export TMPDIR="$RESTIC_TMP_DIR"
 export RESTIC_CACHE_DIR
 export RESTIC_REPOSITORY
@@ -79,6 +81,97 @@ log_error() { log "ERROR" "$@" >&2; }
 die() {
     log_error "$@"
     exit 1
+}
+
+# --- status file + notifications ------------------------------------------
+#
+# Every automated job (backup, maintenance, verify) reports its
+# outcome two ways:
+#   1. A status file any external monitoring (Nagios, Zabbix, a simple
+#      cron check, ...) can poll or `source` - always written,
+#      regardless of whether notifications are configured.
+#   2. An email and/or webhook notification - only for failures and
+#      warnings by default (RESTIC_NOTIFY_ON=failure), or always if
+#      set to "always". Both channels are opt-in: set
+#      RESTIC_NOTIFY_EMAIL and/or RESTIC_NOTIFY_WEBHOOK_URL in
+#      restic.env to enable them. Neither is required - the status
+#      file alone is useful with zero configuration.
+
+# write_status_file <job> <status> <summary>
+#   job: "backup" | "maintenance" | "verify"
+#   status: "success" | "warning" | "failure" | "skipped"
+write_status_file() {
+    local job="$1" status="$2" summary="$3"
+    local file="${RESTIC_STATUS_DIR}/${job}.status"
+    local host
+    host="$(hostname -f 2>/dev/null || hostname)"
+    cat > "$file" <<STATUSEOF
+JOB=${job}
+STATUS=${status}
+TIMESTAMP=$(date -Is)
+HOST=${host}
+SUMMARY=${summary}
+STATUSEOF
+}
+
+# Minimal JSON string escaping (quotes, backslashes, newlines) so a
+# one-field webhook payload can be built without depending on jq.
+_notify_json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    printf '%s' "$s"
+}
+
+# notify <job> <status> <summary>
+#
+# Always updates the status file (see write_status_file). Sends
+# email/webhook notifications too, unless status is "success" and
+# RESTIC_NOTIFY_ON is not "always" - so by default you hear about
+# failures and warnings, not a confirmation every single day.
+# "skipped" (e.g. maintenance finding a backup still running) never
+# notifies, only updates the status file - it isn't a failure.
+notify() {
+    local job="$1" status="$2" summary="$3"
+
+    write_status_file "$job" "$status" "$summary"
+
+    if [[ "$status" == "skipped" ]]; then
+        return 0
+    fi
+    if [[ "$status" == "success" && "${RESTIC_NOTIFY_ON}" != "always" ]]; then
+        return 0
+    fi
+
+    local host subject
+    host="$(hostname -f 2>/dev/null || hostname)"
+    subject="[restic] ${job} ${status} on ${host}"
+
+    if [[ -n "${RESTIC_NOTIFY_EMAIL:-}" ]]; then
+        if command -v mail >/dev/null 2>&1; then
+            printf '%s\n' "$summary" | mail -s "$subject" "$RESTIC_NOTIFY_EMAIL" \
+                || log_error "notify: 'mail' failed to send to $RESTIC_NOTIFY_EMAIL"
+        elif command -v sendmail >/dev/null 2>&1; then
+            printf 'To: %s\nSubject: %s\n\n%s\n' "$RESTIC_NOTIFY_EMAIL" "$subject" "$summary" \
+                | sendmail -t \
+                || log_error "notify: 'sendmail' failed to send to $RESTIC_NOTIFY_EMAIL"
+        else
+            log_error "notify: RESTIC_NOTIFY_EMAIL is set but neither 'mail' nor 'sendmail' is installed"
+        fi
+    fi
+
+    if [[ -n "${RESTIC_NOTIFY_WEBHOOK_URL:-}" ]]; then
+        if command -v curl >/dev/null 2>&1; then
+            local escaped
+            escaped="$(_notify_json_escape "${subject}: ${summary}")"
+            curl -fsS -m 10 -X POST -H 'Content-Type: application/json' \
+                -d "{\"text\": \"${escaped}\"}" "$RESTIC_NOTIFY_WEBHOOK_URL" >/dev/null \
+                || log_error "notify: webhook POST to $RESTIC_NOTIFY_WEBHOOK_URL failed"
+        else
+            log_error "notify: RESTIC_NOTIFY_WEBHOOK_URL is set but curl is not installed"
+        fi
+    fi
 }
 
 # --- locking -------------------------------------------------------------

@@ -28,8 +28,9 @@ resticctl backup [--manual]     # run a backup of all configured shares
 resticctl maintenance           # apply retention + prune + check
 resticctl list [flags...]       # list snapshots (restic snapshots flags)
 resticctl delete [flags...]     # remove snapshot(s), see below
+resticctl verify [share-path]   # prove backups are actually restorable, see below
 resticctl version               # what commit is deployed
-resticctl status                # timer schedule + each service's last run
+resticctl status                # timer schedule + each service's last run/status
 resticctl help
 ```
 
@@ -71,6 +72,16 @@ underlying scripts directly, not through `resticctl`).
   AWS credentials together) for configuration, and log every run to
   `/var/log/restic/{backup,maintenance}.log` as well as the systemd
   journal (`journalctl -u restic-backup.service`).
+- **restic-verify.timer** (installed but not enabled by default -
+  see "Restore verification" below) can additionally run
+  **restic-verify.service** weekly, which samples a few files from
+  each share's latest snapshot and reads them back with `restic dump`
+  to prove backups are actually restorable, not just present.
+- **Every job reports its outcome two ways**: a status file
+  (`RESTIC_STATUS_DIR`, always written, zero config needed) any
+  external monitoring can poll, and an optional email/webhook
+  notification on failure (or always, if configured) - see
+  "Alerting on failure" below.
 - `restic-snapshots.sh` is a standalone script (and sourceable shell
   function) to list snapshots on demand.
 
@@ -78,9 +89,12 @@ underlying scripts directly, not through `resticctl`).
 
 - `restic` (recent enough to support `--pack-size`, `--read-concurrency`
   and `-o s3.connections` / `-o s3.storage-class`)
-- `bash`, `systemd`, `logrotate`, `mountpoint`, `flock` (util-linux,
-  almost always already present)
-- `jq`, only needed for `restic-snapshots.sh --latest-id`
+- `bash`, `systemd`, `logrotate`, `mountpoint`, `flock`, `timeout`
+  (util-linux/coreutils, almost always already present)
+- `jq` and `shuf` (coreutils) - used by `restic-snapshots.sh --latest-id`
+  and required by `restic-verify.sh`
+- `mail`/`sendmail` and/or `curl`, only if you enable email or webhook
+  failure notifications (`RESTIC_NOTIFY_EMAIL` / `RESTIC_NOTIFY_WEBHOOK_URL`)
 
 ## Install
 
@@ -301,15 +315,87 @@ logs everything to `maintenance.log`.
 **This is destructive and, once pruned, irreversible** - double-check
 the dry-run output and the snapshot IDs before confirming.
 
+## Restore verification
+
+`restic check` (run as part of daily maintenance) only validates
+repository metadata - it never proves a file can actually be read back
+out. `restic-verify.sh` / `resticctl verify` closes that gap: for each
+configured share, it takes the latest snapshot, samples a handful of
+files (`RESTIC_VERIFY_SAMPLE_FILES`, default 3), and streams each one
+back with `restic dump` under a timeout (`RESTIC_VERIFY_TIMEOUT`,
+default 300s) - the same data-read path a real `restic restore` would
+use, without pulling down a whole snapshot's worth of data every run.
+
+```sh
+resticctl verify                        # every configured share
+resticctl verify /mnt/share-finance     # just one share
+```
+
+**Read this before scheduling it.** This repository's data lives
+behind S3 Glacier/tape (see `docs/glacier-notes.md`). Whether a sampled
+file comes back immediately or needs an explicit restore/thaw step
+first depends entirely on your specific destination - true AWS Glacier
+and Deep Archive require an explicit restore before the object is
+readable; many on-prem S3-compatible gateways serve reads transparently
+instead. If yours needs that explicit step, every file here will just
+time out (and correctly report a failure - that's the useful signal,
+not a bug) rather than actually verifying anything. **Run `resticctl
+verify` manually first** and see what actually happens against your
+real repository before enabling `restic-verify.timer`
+(`systemctl enable --now restic-verify.timer`) - `install.sh` installs
+the unit but deliberately does not enable it.
+
+A share with zero snapshots is reported as a failure too (nothing to
+verify means something's wrong, not nothing to do), and an empty
+snapshot (no files) is logged as a skip, not a failure.
+
+## Alerting on failure
+
+Every job (backup, maintenance, verify) reports its outcome two ways,
+configured in `restic.env`:
+
+1. **A status file**, always written regardless of any other config -
+   `${RESTIC_STATUS_DIR}/<job>.status` (default
+   `/var/log/restic/status/{backup,maintenance,verify}.status`), a
+   simple `KEY=value` file:
+   ```
+   JOB=backup
+   STATUS=success
+   TIMESTAMP=2026-09-23T16:12:07+02:00
+   HOST=manny-01
+   SUMMARY=restic backup on manny-01 completed successfully in 42s (3 share(s)).
+   ```
+   `STATUS` is one of `success`, `warning`, `failure`, or `skipped`
+   (maintenance finding a backup still running - not a failure). This
+   needs zero configuration and is meant to be polled by whatever
+   monitoring you already have (Nagios, Zabbix, a cron job that greps
+   `STATUS=`, ...) - also viewable via `resticctl status`.
+
+2. **Email and/or webhook notifications**, opt-in:
+   ```sh
+   RESTIC_NOTIFY_EMAIL="ops-team@example.lu"
+   RESTIC_NOTIFY_WEBHOOK_URL="https://hooks.example.com/incoming/..."   # Slack/Teams-style {"text": "..."}
+   RESTIC_NOTIFY_ON="failure"    # or "always" for a daily success ping too
+   ```
+   Email goes through whatever local `mail`/`sendmail` is configured
+   on the host (a local MTA/relay must actually exist - if neither
+   command is installed, or no relay is configured, the job logs an
+   error about it but still completes normally; a notification failure
+   never fails the backup/maintenance job itself). Leave a channel
+   empty to disable it - both are independent and optional. By
+   default (`RESTIC_NOTIFY_ON=failure`) you only hear about failures
+   and warnings, not a confirmation on every routine success.
+
 ## Logging
 
-Every run of both jobs is logged with timestamps to:
+Every run of every job is logged with timestamps to:
 
 - `/var/log/restic/backup.log`
 - `/var/log/restic/maintenance.log`
+- `/var/log/restic/verify.log`
 
 and mirrored to the systemd journal (`journalctl -u restic-backup -u
-restic-maintenance`). `logrotate/restic` (installed to
+restic-maintenance -u restic-verify`). `logrotate/restic` (installed to
 `/etc/logrotate.d/restic`) rotates these daily and keeps 90 days,
 compressed.
 
