@@ -276,6 +276,50 @@ restic-maintenance`). `logrotate/restic` (installed to
 `/etc/logrotate.d/restic`) rotates these daily and keeps 90 days,
 compressed.
 
+## Checking the deployed version
+
+`install.sh` stamps exactly which commit it deployed into
+`/opt/restic/bin/VERSION` - no manually-bumped version number to
+forget to update, since it's just read straight from git at install
+time:
+
+```sh
+cat /opt/restic/bin/VERSION
+```
+
+```
+commit:      aefe587
+branch:      claude/amazing-ptolemy-8a49lf
+commit date: 2026-09-23T14:32:05+00:00
+installed:   2026-09-23T16:40:12+02:00
+```
+
+To check whether that's actually the latest, compare `commit` above
+against the branch's head commit - either on your synced checkout
+(`git -C /opt/restic/src log -1 --oneline`) or on GitHub. If they
+match, you're up to date; if not, sync and re-run `./install.sh`
+(see "Updating a deployment" below). `commit` also gets a `(with
+local uncommitted changes)` suffix if `/opt/restic/src` had
+uncommitted edits at install time - a sign something was hand-patched
+outside of git.
+
+If `/opt/restic/src` isn't a git checkout at all (e.g. a bare tarball
+extract with no `.git`), `VERSION` says so explicitly rather than
+showing stale or misleading info.
+
+## Updating a deployment
+
+```sh
+cd /opt/restic/src
+git pull                # or: re-sync from your laptop, see below
+sudo ./install.sh       # re-stamps VERSION, overwrites bin/*.sh and the
+                         # systemd units, leaves /etc/restic/* untouched
+```
+
+If the server can't reach GitHub directly, sync from a machine that
+can instead (`git pull` there, then `rsync -avz --delete` the checkout
+across), then run `install.sh` on the server as above.
+
 ## Operational checks
 
 ```sh

@@ -27,6 +27,36 @@ install -m 0755 "${SCRIPT_DIR}/bin/restic-snapshots.sh"   /opt/restic/bin/restic
 install -m 0755 "${SCRIPT_DIR}/bin/restic-forget.sh"      /opt/restic/bin/restic-forget.sh
 install -m 0644 "${SCRIPT_DIR}/bin/restic-common.sh"      /opt/restic/bin/restic-common.sh
 
+echo "==> Stamping installed version"
+# Records exactly what commit was deployed, so `cat
+# /opt/restic/bin/VERSION` always answers "am I running the latest" -
+# no manually-bumped version number to forget to update. Falls back
+# gracefully if SCRIPT_DIR isn't a git checkout (e.g. a bare tarball
+# extract with no .git).
+VERSION_FILE=/opt/restic/bin/VERSION
+if git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    GIT_COMMIT="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    GIT_BRANCH="$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+    GIT_COMMIT_DATE="$(git -C "$SCRIPT_DIR" log -1 --format=%cI 2>/dev/null || echo unknown)"
+    GIT_DIRTY=""
+    if ! git -C "$SCRIPT_DIR" diff --quiet 2>/dev/null || ! git -C "$SCRIPT_DIR" diff --cached --quiet 2>/dev/null; then
+        GIT_DIRTY=" (with local uncommitted changes)"
+    fi
+else
+    GIT_COMMIT="unknown (not a git checkout)"
+    GIT_BRANCH="unknown"
+    GIT_COMMIT_DATE="unknown"
+    GIT_DIRTY=""
+fi
+cat > "$VERSION_FILE" <<VERSIONEOF
+commit:      ${GIT_COMMIT}${GIT_DIRTY}
+branch:      ${GIT_BRANCH}
+commit date: ${GIT_COMMIT_DATE}
+installed:   $(date -Is)
+VERSIONEOF
+echo "    wrote $VERSION_FILE:"
+sed 's/^/    /' "$VERSION_FILE"
+
 echo "==> Creating cache/tmp directories"
 # These must exist on disk *before* the systemd services ever start:
 # ReadWritePaths= in restic-backup.service / restic-maintenance.service
@@ -87,4 +117,6 @@ Check status any time with:
     systemctl list-timers 'restic-*'
     journalctl -u restic-backup.service -u restic-maintenance.service
     tail -f /var/log/restic/backup.log /var/log/restic/maintenance.log
+
+Deployed version: cat /opt/restic/bin/VERSION
 EOF
