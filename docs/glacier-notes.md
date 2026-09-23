@@ -87,7 +87,8 @@ data. If that data is in a Glacier storage class that requires
 restoration, you must first trigger and wait for the S3 restore (e.g.
 `aws s3api restore-object`) for the relevant objects before running
 those restic commands - restic itself does not initiate or wait for
-Glacier restores. The daily jobs in this repo (`backup`,
-`forget --prune --max-repack-size 0`, and the metadata-only `check`)
-never need to do this, which is why they can safely run automatically
-every day even against a Glacier/tape-backed repository.
+Glacier restores. The daily jobs in this repo (per-share `backup`,
+per-share `forget`, the single `prune --max-repack-size 0`, and the
+metadata-only `check`) never need to do this, which is why they can
+safely run automatically every day even against a Glacier/tape-backed
+repository.

@@ -1,0 +1,16 @@
+# Named retention policies, referenced by name from shares.conf so
+# each share can keep a different history.
+#
+# Format (whitespace-separated): name  keep_daily  keep_weekly  keep_monthly  keep_yearly
+# Blank lines and lines starting with # are ignored. Values map
+# directly to restic's `forget --keep-daily/--keep-weekly/
+# --keep-monthly/--keep-yearly`; 0 means "keep none at that tier".
+#
+# The three shipped here mirror Cohesity's short/mid/long retention
+# tiers - adjust the numbers (and add more named policies) to match
+# your actual policies.
+#
+# name          daily   weekly  monthly yearly
+short           30      0       0       0
+mid             14      12      6       0
+long            7       8       24      7

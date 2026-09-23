@@ -21,13 +21,16 @@ install.sh  Installs everything above onto this host
 - **restic-backup.timer** fires **restic-backup.service** daily at
   01:00 (+ up to 10 min random delay), which runs
   `/usr/local/bin/restic-backup.sh`. That script verifies every
-  configured share is actually mounted, then runs `restic backup`
-  against all of them in one snapshot-per-run.
+  configured share is actually mounted, then backs up **each share as
+  its own `restic backup` call** - one snapshot per share, per run
+  (not one combined multi-path snapshot) - so each can carry its own
+  retention policy.
 - **restic-maintenance.timer** fires **restic-maintenance.service**
   daily at 00:00 (midnight, the last job of the day), which runs
-  `/usr/local/bin/restic-maintenance.sh`: applies the retention policy
-  and prunes (`restic forget --prune --max-repack-size 0`), then an
-  optional metadata-only `restic check`.
+  `/usr/local/bin/restic-maintenance.sh`: applies **each share's own
+  retention policy** (`restic forget --path <share> --keep-...`, once
+  per share), then a single repository-wide `restic prune
+  --max-repack-size 0`, then an optional metadata-only `restic check`.
 - **Backup and maintenance never run at the same time.** Both scripts
   take the same exclusive lock (`RESTIC_LOCK_FILE`,
   `/run/restic/restic.lock` by default) before touching the
@@ -78,15 +81,19 @@ Then:
 2. Edit `/etc/restic/secrets.env` (chmod 600, root-only) with the
    repository password and your AWS access key/secret (ideally a
    dedicated IAM user scoped to just this bucket/prefix).
-3. Edit `/etc/restic/backup-paths.txt` with the mount points to back
-   up, and `/etc/restic/excludes.txt` as needed.
-4. If the repository doesn't exist yet, initialize it with the same
+3. Edit `/etc/restic/retention-policies.conf` to define your policies
+   (short/mid/long, or whatever names you want), then
+   `/etc/restic/shares.conf` to list each share's mount point and
+   which policy it uses. See [Per-share retention](#per-share-retention-short-mid-long-or-your-own-names)
+   below.
+4. Edit `/etc/restic/excludes.txt` as needed.
+5. If the repository doesn't exist yet, initialize it with the same
    pack size and storage class the automation will use:
    ```sh
    set -a; source /etc/restic/restic.env; source /etc/restic/secrets.env; set +a
    restic init --pack-size "$RESTIC_PACK_SIZE" -o s3.storage-class="$RESTIC_S3_STORAGE_CLASS"
    ```
-5. Enable and start the daily timers:
+6. Enable and start the daily timers:
    ```sh
    systemctl enable --now restic-backup.timer
    systemctl enable --now restic-maintenance.timer
@@ -104,12 +111,12 @@ Then:
 | `RESTIC_READ_CONCURRENCY` | concurrent file reads during backup (`--read-concurrency`) |
 | `RESTIC_CACHE_DIR` | restic's local metadata cache |
 | `RESTIC_TMP_DIR` | scratch dir; exported as `TMPDIR` for restic (see below) |
-| `BACKUP_PATHS_FILE` | list of mount points to back up |
-| `EXCLUDE_FILE` | `--exclude-file` patterns |
+| `SHARES_FILE` | each share's mount point + retention policy name (see below) |
+| `RETENTION_POLICIES_FILE` | named retention policies (see below) |
+| `EXCLUDE_FILE` | `--exclude-file` patterns, applied to every share |
 | `RESTIC_BACKUP_TAG` | tag applied to snapshots created by the job |
 | `REQUIRE_MOUNTED` | abort backup if a configured share isn't mounted |
-| `RESTIC_KEEP_DAILY/WEEKLY/MONTHLY/YEARLY` | retention (see below) |
-| `RESTIC_MAINTENANCE_EXTRA_ARGS` | extra flags for `forget --prune` (default `--max-repack-size 0`, required for Glacier/tape) |
+| `RESTIC_MAINTENANCE_EXTRA_ARGS` | extra flags for the maintenance `prune` (default `--max-repack-size 0`, required for Glacier/tape) |
 | `RESTIC_RUN_CHECK` | run metadata-only `restic check` after prune |
 | `RESTIC_LOCK_FILE` | shared lock preventing backup/maintenance overlap |
 | `RESTIC_BACKUP_LOCK_TIMEOUT` | seconds backup waits for the lock before failing |
@@ -134,28 +141,58 @@ make it customizable:
 - `RESTIC_S3_CONNECTIONS` (`-o s3.connections`): how many concurrent
   connections the S3 backend uses to upload/download pack files.
 
-### Retention (Cohesity-style short/mid/long)
+### Per-share retention (short/mid/long, or your own names)
 
-Mapped onto restic's `forget --keep-*` policy tiers:
+Every share can use a different retention policy. Two files work
+together:
 
-| Cohesity tier | restic flag | default |
-|---|---|---|
-| Short term | `--keep-daily` | 30 |
-| Mid term | `--keep-weekly` + `--keep-monthly` | 12 + 12 |
-| Long term | `--keep-yearly` | 7 |
+**`retention-policies.conf`** defines named policies as
+`name keep_daily keep_weekly keep_monthly keep_yearly`:
 
-Adjust the four `RESTIC_KEEP_*` values in `restic.env` to match your
-actual Cohesity policy numbers. All snapshots are grouped by
-`host,paths` (`--group-by host,paths`) so retention is applied
-per-share, not across all shares combined.
+```
+# name    daily  weekly  monthly  yearly
+short     30     0       0        0
+mid       14     12      6        0
+long      7      8       24       7
+```
+
+**`shares.conf`** assigns one policy per share:
+
+```
+# path                     policy
+/mnt/share-finance         long
+/mnt/share-engineering     mid
+/mnt/share-hr              short
+```
+
+Add as many policies and shares as you need - the names `short`/
+`mid`/`long` are just the shipped defaults (chosen to mirror
+Cohesity's tiers), not special-cased anywhere in the scripts. A share
+with an unknown policy name causes both backup and maintenance to
+abort loudly rather than silently apply the wrong retention.
+
+**Why one snapshot per share is required:** restic's `forget`/`prune`
+act on whole snapshots, not on sub-paths within one. To let two shares
+keep different histories, each must own its own snapshots that
+`restic forget --path <share>` can select independently - so
+`restic-backup.sh` runs `restic backup <path>` once per share (see
+`bin/restic-common.sh` for the full explanation), rather than passing
+every share to a single combined `restic backup` call.
 
 ### Maintenance and `--max-repack-size 0`
 
-`bin/restic-maintenance.sh` always runs:
+`bin/restic-maintenance.sh`, once per share:
 
 ```
-restic forget --keep-daily N --keep-weekly N --keep-monthly N --keep-yearly N \
-    --group-by host,paths --prune --max-repack-size 0
+restic forget --path <share> --group-by host,paths \
+    --keep-daily N --keep-weekly N --keep-monthly N --keep-yearly N
+```
+
+using that share's own numbers from `retention-policies.conf`, then
+once for the whole repository:
+
+```
+restic prune --max-repack-size 0
 ```
 
 `--max-repack-size 0` is mandatory for a Glacier/tape-backed

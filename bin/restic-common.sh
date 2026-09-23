@@ -109,40 +109,126 @@ acquire_lock() {
     fi
 }
 
-# Verify every path listed in BACKUP_PATHS_FILE is an active mount
-# point. Populates the global array VALID_BACKUP_PATHS. Missing/failed
-# mounts are logged and, if REQUIRE_MOUNTED=true, cause the caller to
-# abort (via return 1); a per-path failure is never silently ignored.
-check_backup_paths() {
-    : "${BACKUP_PATHS_FILE:?BACKUP_PATHS_FILE must be set in $RESTIC_ENV_FILE}"
-    [[ -r "$BACKUP_PATHS_FILE" ]] || die "cannot read BACKUP_PATHS_FILE: $BACKUP_PATHS_FILE"
+# --- retention policies + per-share config --------------------------------
+#
+# Each share in SHARES_FILE names a retention policy defined in
+# RETENTION_POLICIES_FILE, so different shares can keep short/mid/long
+# history independently. This only works because restic-backup.sh
+# backs up each share as its own `restic backup <path>` call (one
+# snapshot per share, per run) rather than combining every share into
+# a single multi-path snapshot: `restic forget`/`prune` operate on
+# whole snapshots, so distinct retention per share requires each share
+# to own distinct snapshots that `restic forget --path <share>` can
+# select independently.
 
-    VALID_BACKUP_PATHS=()
-    local path missing=0
+# Populates the associative arrays POLICY_KEEP_DAILY/WEEKLY/MONTHLY/YEARLY,
+# keyed by policy name, from RETENTION_POLICIES_FILE.
+load_retention_policies() {
+    : "${RETENTION_POLICIES_FILE:?RETENTION_POLICIES_FILE must be set in $RESTIC_ENV_FILE}"
+    [[ -r "$RETENTION_POLICIES_FILE" ]] || die "cannot read RETENTION_POLICIES_FILE: $RETENTION_POLICIES_FILE"
 
-    while IFS= read -r path || [[ -n "$path" ]]; do
-        [[ -z "$path" || "$path" =~ ^[[:space:]]*# ]] && continue
+    declare -gA POLICY_KEEP_DAILY=()
+    declare -gA POLICY_KEEP_WEEKLY=()
+    declare -gA POLICY_KEEP_MONTHLY=()
+    declare -gA POLICY_KEEP_YEARLY=()
+
+    local line name daily weekly monthly yearly
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%%$'\r'}"
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        read -r name daily weekly monthly yearly <<< "$line"
+        [[ -z "$name" ]] && continue
+
+        if [[ -z "$daily" || -z "$weekly" || -z "$monthly" || -z "$yearly" ]]; then
+            die "malformed line in $RETENTION_POLICIES_FILE (expected: name keep_daily keep_weekly keep_monthly keep_yearly): $line"
+        fi
+
+        POLICY_KEEP_DAILY["$name"]="$daily"
+        POLICY_KEEP_WEEKLY["$name"]="$weekly"
+        POLICY_KEEP_MONTHLY["$name"]="$monthly"
+        POLICY_KEEP_YEARLY["$name"]="$yearly"
+    done < "$RETENTION_POLICIES_FILE"
+
+    if [[ ${#POLICY_KEEP_DAILY[@]} -eq 0 ]]; then
+        die "no retention policies found in $RETENTION_POLICIES_FILE"
+    fi
+}
+
+# Parses SHARES_FILE ("<path> <policy-name>" per line) into the
+# index-aligned arrays SHARE_PATHS / SHARE_POLICIES, covering every
+# configured share regardless of its current mount state. Calls
+# load_retention_policies itself and aborts (die) if a share names a
+# policy that doesn't exist - a bad retention policy name is a config
+# error, not something to silently fall back on.
+parse_shares_file() {
+    : "${SHARES_FILE:?SHARES_FILE must be set in $RESTIC_ENV_FILE}"
+    [[ -r "$SHARES_FILE" ]] || die "cannot read SHARES_FILE: $SHARES_FILE"
+
+    load_retention_policies
+
+    SHARE_PATHS=()
+    SHARE_POLICIES=()
+
+    local line path policy
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%%$'\r'}"
+        line="${line#"${line%%[![:space:]]*}"}"   # trim leading whitespace
+        line="${line%"${line##*[![:space:]]}"}"   # trim trailing whitespace
+        [[ -z "$line" || "$line" =~ ^# ]] && continue
+
+        policy="${line##* }"
+        path="${line% *}"
+        path="${path%"${path##*[![:space:]]}"}"    # trim whitespace left over between columns
         path="${path%/}"
 
+        if [[ -z "${POLICY_KEEP_DAILY[$policy]+x}" ]]; then
+            die "unknown retention policy '$policy' for share '$path' in $SHARES_FILE (check $RETENTION_POLICIES_FILE)"
+        fi
+
+        SHARE_PATHS+=("$path")
+        SHARE_POLICIES+=("$policy")
+    done < "$SHARES_FILE"
+
+    if [[ ${#SHARE_PATHS[@]} -eq 0 ]]; then
+        die "no shares found in $SHARES_FILE"
+    fi
+}
+
+# Must be called after parse_shares_file. Verifies every entry in
+# SHARE_PATHS is an active mount point, populating the index-aligned
+# arrays VALID_SHARE_PATHS / VALID_SHARE_POLICIES. Missing/unmounted
+# shares are logged and, if REQUIRE_MOUNTED=true, cause the caller to
+# abort (via return 1); a per-share failure is never silently ignored.
+# Only used by backup - maintenance applies retention to every
+# configured share regardless of whether it's currently mounted.
+check_shares_mounted() {
+    VALID_SHARE_PATHS=()
+    VALID_SHARE_POLICIES=()
+    local i path missing=0
+
+    for i in "${!SHARE_PATHS[@]}"; do
+        path="${SHARE_PATHS[$i]}"
+
         if [[ ! -d "$path" ]]; then
-            log_error "backup path does not exist: $path"
+            log_error "share path does not exist: $path"
             missing=1
             continue
         fi
 
         if [[ "$REQUIRE_MOUNTED" == "true" ]]; then
             if ! mountpoint -q "$path"; then
-                log_error "backup path is not an active mount point: $path"
+                log_error "share path is not an active mount point: $path"
                 missing=1
                 continue
             fi
         fi
 
-        VALID_BACKUP_PATHS+=("$path")
-    done < "$BACKUP_PATHS_FILE"
+        VALID_SHARE_PATHS+=("$path")
+        VALID_SHARE_POLICIES+=("${SHARE_POLICIES[$i]}")
+    done
 
-    if [[ ${#VALID_BACKUP_PATHS[@]} -eq 0 ]]; then
-        log_error "no valid backup paths found in $BACKUP_PATHS_FILE"
+    if [[ ${#VALID_SHARE_PATHS[@]} -eq 0 ]]; then
+        log_error "no valid shares found in $SHARES_FILE"
         return 1
     fi
 

@@ -1,0 +1,11 @@
+# One share per line: "<mount point>  <retention policy>".
+# The policy name must exist in retention-policies.conf. Blank lines
+# and lines starting with # are ignored.
+#
+# Each share is backed up as its own snapshot (see
+# bin/restic-backup.sh) precisely so its retention policy can be
+# applied independently of every other share's.
+
+/mnt/share-finance             long
+/mnt/share-engineering         mid
+/mnt/share-hr                  short

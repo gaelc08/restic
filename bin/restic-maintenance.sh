@@ -1,18 +1,30 @@
 #!/usr/bin/env bash
-# Daily maintenance: apply the retention policy (forget) and reclaim
-# space (prune), then an optional metadata-only check.
+# Daily maintenance: apply each share's own retention policy (forget),
+# reclaim space once for the whole repository (prune), then an
+# optional metadata-only check.
 #
-# Intended to run daily, after restic-backup.sh, via
-# restic-maintenance.service / .timer.
+# Intended to run daily via restic-maintenance.service / .timer, after
+# restic-backup.sh - though the two can never actually run at the same
+# time, see acquire_lock() in restic-common.sh.
 #
-# IMPORTANT: --max-repack-size 0 is always passed to prune. The
-# repository's data lives behind S3 Glacier / tape. Without this flag,
-# `restic prune` may try to repack (rewrite) pack files that are only
-# partially referenced, which requires reading their old data back
-# from Glacier/tape - slow, and can trigger retrieval costs or tape
-# mounts. With --max-repack-size 0, prune only ever removes pack files
-# that are 100% unreferenced (a pure delete, no read of archived
-# data), and never repacks. See docs/glacier-notes.md.
+# Retention is per share: SHARES_FILE names a retention policy per
+# share, RETENTION_POLICIES_FILE defines each policy's keep-daily/
+# weekly/monthly/yearly numbers (Cohesity-style short/mid/long tiers,
+# or any other names you choose). `restic forget --path <share>` is
+# run once per share with that share's own numbers - forget/prune
+# operate on whole snapshots, and each share has owned its own
+# snapshots since restic-backup.sh backs it up separately, so this is
+# the only way to keep, say, a "long" retention share's history intact
+# while a "short" retention share's older snapshots are forgotten.
+#
+# IMPORTANT: --max-repack-size 0 is always passed to the single, final
+# prune. The repository's data lives behind S3 Glacier / tape. Without
+# this flag, `restic prune` may try to repack (rewrite) pack files
+# that are only partially referenced, which requires reading their old
+# data back from Glacier/tape - slow, and can trigger retrieval costs
+# or tape mounts. With --max-repack-size 0, prune only ever removes
+# pack files that are 100% unreferenced (a pure delete, no re-read of
+# archived data), and never repacks. See docs/glacier-notes.md.
 
 set -uo pipefail
 
@@ -32,36 +44,62 @@ if ! acquire_lock 0; then
 fi
 log_info "acquired lock $RESTIC_LOCK_FILE"
 
-: "${RESTIC_KEEP_DAILY:=30}"
-: "${RESTIC_KEEP_WEEKLY:=12}"
-: "${RESTIC_KEEP_MONTHLY:=12}"
-: "${RESTIC_KEEP_YEARLY:=7}"
+parse_shares_file
+log_info "shares: ${SHARE_PATHS[*]}"
 
-log_info "retention policy (Cohesity-style short/mid/long): daily=${RESTIC_KEEP_DAILY} weekly=${RESTIC_KEEP_WEEKLY} monthly=${RESTIC_KEEP_MONTHLY} yearly=${RESTIC_KEEP_YEARLY}"
+FORGET_FAILED=0
+
+for i in "${!SHARE_PATHS[@]}"; do
+    path="${SHARE_PATHS[$i]}"
+    policy="${SHARE_POLICIES[$i]}"
+    share_name="$(basename "$path")"
+    daily="${POLICY_KEEP_DAILY[$policy]}"
+    weekly="${POLICY_KEEP_WEEKLY[$policy]}"
+    monthly="${POLICY_KEEP_MONTHLY[$policy]}"
+    yearly="${POLICY_KEEP_YEARLY[$policy]}"
+
+    log_info "applying policy '$policy' to share '$share_name' ($path): daily=$daily weekly=$weekly monthly=$monthly yearly=$yearly"
+
+    FORGET_ARGS=(
+        forget
+        "${RESTIC_GLOBAL_ARGS[@]}"
+        --path "$path"
+        --group-by host,paths
+        --keep-daily "$daily"
+        --keep-weekly "$weekly"
+        --keep-monthly "$monthly"
+        --keep-yearly "$yearly"
+    )
+
+    log_info "running: restic ${FORGET_ARGS[*]}"
+    restic "${FORGET_ARGS[@]}" >>"$LOG_FILE" 2>&1
+    rc=$?
+
+    if [[ $rc -eq 0 ]]; then
+        log_info "share '$share_name' forget completed successfully"
+    else
+        log_error "share '$share_name' forget FAILED (exit $rc)"
+        FORGET_FAILED=1
+    fi
+done
 
 # shellcheck disable=SC2206
 EXTRA_ARGS=(${RESTIC_MAINTENANCE_EXTRA_ARGS:---max-repack-size 0})
 
-FORGET_ARGS=(
-    forget
+PRUNE_ARGS=(
+    prune
     "${RESTIC_GLOBAL_ARGS[@]}"
-    --group-by host,paths
-    --keep-daily "$RESTIC_KEEP_DAILY"
-    --keep-weekly "$RESTIC_KEEP_WEEKLY"
-    --keep-monthly "$RESTIC_KEEP_MONTHLY"
-    --keep-yearly "$RESTIC_KEEP_YEARLY"
-    --prune
     "${EXTRA_ARGS[@]}"
 )
 
-log_info "running: restic ${FORGET_ARGS[*]}"
-restic "${FORGET_ARGS[@]}" >>"$LOG_FILE" 2>&1
-FORGET_RC=$?
+log_info "running: restic ${PRUNE_ARGS[*]}"
+restic "${PRUNE_ARGS[@]}" >>"$LOG_FILE" 2>&1
+PRUNE_RC=$?
 
-if [[ $FORGET_RC -eq 0 ]]; then
-    log_info "forget --prune completed successfully"
+if [[ $PRUNE_RC -eq 0 ]]; then
+    log_info "prune completed successfully"
 else
-    log_error "forget --prune FAILED (exit $FORGET_RC)"
+    log_error "prune FAILED (exit $PRUNE_RC)"
 fi
 
 CHECK_RC=0
@@ -84,9 +122,9 @@ fi
 
 END_TS=$(date +%s)
 DURATION=$((END_TS - START_TS))
-log_info "===== restic maintenance finished in ${DURATION}s (forget/prune exit $FORGET_RC, check exit $CHECK_RC) ====="
+log_info "===== restic maintenance finished in ${DURATION}s (forget failed=$FORGET_FAILED, prune exit $PRUNE_RC, check exit $CHECK_RC) ====="
 
-if [[ $FORGET_RC -ne 0 || $CHECK_RC -ne 0 ]]; then
+if [[ $FORGET_FAILED -eq 1 || $PRUNE_RC -ne 0 || $CHECK_RC -ne 0 ]]; then
     exit 1
 fi
 exit 0
