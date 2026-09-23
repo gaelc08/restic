@@ -26,6 +26,10 @@ install -m 0755 "${SCRIPT_DIR}/bin/restic-maintenance.sh" /opt/restic/bin/restic
 install -m 0755 "${SCRIPT_DIR}/bin/restic-snapshots.sh"   /opt/restic/bin/restic-snapshots.sh
 install -m 0755 "${SCRIPT_DIR}/bin/restic-forget.sh"      /opt/restic/bin/restic-forget.sh
 install -m 0644 "${SCRIPT_DIR}/bin/restic-common.sh"      /opt/restic/bin/restic-common.sh
+install -m 0755 "${SCRIPT_DIR}/bin/resticctl"              /opt/restic/bin/resticctl
+
+echo "==> Linking resticctl onto PATH"
+ln -sf /opt/restic/bin/resticctl /usr/local/sbin/resticctl
 
 echo "==> Stamping installed version"
 # Records exactly what commit was deployed, so `cat
@@ -118,5 +122,12 @@ Check status any time with:
     journalctl -u restic-backup.service -u restic-maintenance.service
     tail -f /var/log/restic/backup.log /var/log/restic/maintenance.log
 
-Deployed version: cat /opt/restic/bin/VERSION
+Or drive everything through the resticctl CLI (installed onto PATH):
+    resticctl status
+    resticctl backup --manual
+    resticctl maintenance
+    resticctl list --path /mnt/your-share
+    resticctl delete <snapshot-id>
+    resticctl version
+    resticctl help
 EOF

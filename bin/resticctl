@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# resticctl - single entry point for the restic backup automation,
+# in the spirit of a Cohesity/NetApp-style CLI (one command, verb
+# subcommands). This is a thin dispatcher only: every subcommand
+# delegates straight to the existing, already-tested script - no
+# logic is duplicated or reimplemented here.
+#
+# Usage:
+#   resticctl backup [--manual]
+#   resticctl maintenance
+#   resticctl list [restic snapshots flags...]
+#   resticctl delete [--yes] [--no-prune] <snapshot-id...>
+#   resticctl version
+#   resticctl status
+#   resticctl help
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+
+usage() {
+    cat <<'EOF'
+Usage: resticctl <command> [args...]
+
+Commands:
+  backup [--manual]              Run a backup of all configured shares.
+                                  --manual tags the run "manual" instead
+                                  of the configured RESTIC_BACKUP_TAG.
+
+  maintenance                    Apply each share's retention policy
+                                  (forget), prune, and check.
+
+  list [restic snapshots flags]  List snapshots, e.g.:
+                                    resticctl list --path /mnt/share-finance
+                                    resticctl list --tag share:finance
+                                    resticctl list --json
+
+  delete [--yes] [--no-prune] <snapshot-id...>
+                                  Remove snapshot(s). Always previews with
+                                  --dry-run and asks for confirmation
+                                  unless --yes is given. Also accepts
+                                  restic forget filter/policy flags
+                                  instead of explicit IDs, e.g.:
+                                    resticctl delete --tag share:test --keep-last 1
+
+  version                        Show the deployed commit (VERSION file).
+
+  status                         Show timer schedule and each service's
+                                  last run.
+
+  help                           Show this help.
+
+Every command reads /etc/restic/restic.env and /etc/restic/secrets.env
+the same way the underlying script would if run directly; see README.md
+for what each of those configures.
+EOF
+}
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+    backup)
+        exec "${SCRIPT_DIR}/restic-backup.sh" "$@"
+        ;;
+    maintenance)
+        exec "${SCRIPT_DIR}/restic-maintenance.sh" "$@"
+        ;;
+    list)
+        exec "${SCRIPT_DIR}/restic-snapshots.sh" "$@"
+        ;;
+    delete)
+        exec "${SCRIPT_DIR}/restic-forget.sh" "$@"
+        ;;
+    version)
+        if [[ -r "${SCRIPT_DIR}/VERSION" ]]; then
+            cat "${SCRIPT_DIR}/VERSION"
+        else
+            echo "No VERSION file at ${SCRIPT_DIR}/VERSION - re-run install.sh to generate it." >&2
+            exit 1
+        fi
+        ;;
+    status)
+        systemctl list-timers 'restic-*' --no-pager 2>/dev/null
+        echo
+        systemctl status restic-backup.service --no-pager -n 5 2>/dev/null
+        echo
+        systemctl status restic-maintenance.service --no-pager -n 5 2>/dev/null
+        ;;
+    help|-h|--help)
+        usage
+        ;;
+    *)
+        echo "Unknown command: $cmd" >&2
+        echo >&2
+        usage >&2
+        exit 2
+        ;;
+esac

@@ -16,6 +16,30 @@ docs/       Notes on the S3 Glacier specifics
 install.sh  Installs everything above onto this host
 ```
 
+## The `resticctl` CLI
+
+Everything below can also be driven through one command with verb
+subcommands - `install.sh` links it onto `PATH`
+(`/usr/local/sbin/resticctl`), so it's callable from anywhere once
+installed:
+
+```sh
+resticctl backup [--manual]     # run a backup of all configured shares
+resticctl maintenance           # apply retention + prune + check
+resticctl list [flags...]       # list snapshots (restic snapshots flags)
+resticctl delete [flags...]     # remove snapshot(s), see below
+resticctl version               # what commit is deployed
+resticctl status                # timer schedule + each service's last run
+resticctl help
+```
+
+It's a thin dispatcher, not a reimplementation - `resticctl backup` is
+exactly `restic-backup.sh`, `resticctl list` is exactly
+`restic-snapshots.sh`, and so on, each documented in detail below.
+Use whichever is more convenient; both work identically, including
+from cron, other scripts, or systemd (which still calls the
+underlying scripts directly, not through `resticctl`).
+
 ## How it fits together
 
 - **restic-backup.timer** fires **restic-backup.service** daily at
