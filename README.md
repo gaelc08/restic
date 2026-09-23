@@ -234,6 +234,36 @@ RESTIC_SNAPSHOTS_SOURCED=1 source /opt/restic/bin/restic-snapshots.sh
 restic_list_snapshots --json --host myhost
 ```
 
+## Removing snapshots manually
+
+`restic-forget.sh` is a safety-wrapped `restic forget` for ad-hoc
+cleanup (test snapshots, mistakes, one-off removals) - the automated
+daily retention already runs on its own via `restic-maintenance.sh`,
+this is only for manual intervention outside that schedule.
+
+```sh
+# by snapshot ID (from restic-snapshots.sh)
+sudo /opt/restic/bin/restic-forget.sh 35f79137 740bba99
+
+# or with restic's own filter/policy flags
+sudo /opt/restic/bin/restic-forget.sh --tag share:test --keep-last 1
+```
+
+It always shows what would be removed first (`restic forget
+--dry-run`) and asks for confirmation before doing anything - pass
+`--yes` to skip the prompt for non-interactive use (required when
+there's no TTY, e.g. from another script). By default it also runs
+`restic prune --max-repack-size 0` immediately afterward to actually
+reclaim the space (same `--max-repack-size 0` requirement as
+`restic-maintenance.sh` - see `docs/glacier-notes.md`); pass
+`--no-prune` to skip that and batch several forget runs before a
+single prune. Like backup and maintenance, it takes the shared lock
+(`RESTIC_LOCK_FILE`) so it can't run concurrently with either, and
+logs everything to `maintenance.log`.
+
+**This is destructive and, once pruned, irreversible** - double-check
+the dry-run output and the snapshot IDs before confirming.
+
 ## Logging
 
 Every run of both jobs is logged with timestamps to:
