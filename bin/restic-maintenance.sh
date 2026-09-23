@@ -62,6 +62,7 @@ for i in "${!SHARE_PATHS[@]}"; do
 
     log_info "applying policy '$policy' to share '$share_name' ($path): daily=$daily weekly=$weekly monthly=$monthly yearly=$yearly"
 
+    # shellcheck disable=SC2054  # "host,paths" is one argument, the comma is intended
     FORGET_ARGS=(
         forget
         "${RESTIC_GLOBAL_ARGS[@]}"

@@ -474,3 +474,16 @@ sudo /opt/restic/bin/restic-backup.sh --manual
 
 which tags the resulting snapshot(s) `manual` instead of `scheduled`
 (the per-share `share:<name>` and `policy:<name>` tags are unaffected).
+
+## Development
+
+CI (`.github/workflows/ci.yml`) runs shellcheck and `bash -n` on
+`install.sh` and every script in `bin/` on each push and pull request.
+To run the same locally:
+
+```sh
+shellcheck install.sh bin/*.sh bin/resticctl
+```
+
+`.shellcheckrc` makes shellcheck follow the `source` of
+`restic-common.sh`, so no extra flags are needed.
