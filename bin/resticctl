@@ -106,9 +106,19 @@ case "$cmd" in
         echo
         systemctl status restic-maintenance.service --no-pager -n 5 2>/dev/null
         echo
-        echo "-- last recorded run status (RESTIC_STATUS_DIR, default /var/log/restic/status) --"
+        # Same RESTIC_STATUS_DIR the jobs write to (restic-common.sh):
+        # read from restic.env only, in a subshell - status must not need
+        # the secrets file, and nothing else from restic.env should leak
+        # into this shell.
+        status_dir="$(
+            env_file="${RESTIC_ENV_FILE:-/etc/restic/restic.env}"
+            # shellcheck disable=SC1090
+            [[ -r "$env_file" ]] && source "$env_file" >/dev/null 2>&1
+            echo "${RESTIC_STATUS_DIR:-/var/log/restic/status}"
+        )"
+        echo "-- last recorded run status (${status_dir}) --"
         shopt -s nullglob
-        status_files=(/var/log/restic/status/*.status)
+        status_files=("${status_dir}"/*.status)
         shopt -u nullglob
         if [[ ${#status_files[@]} -eq 0 ]]; then
             echo "(none yet)"
