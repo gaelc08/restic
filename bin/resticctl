@@ -16,7 +16,12 @@
 
 set -uo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+# resolve symlinks (install.sh links this onto PATH at
+# /usr/local/sbin/resticctl) so SCRIPT_DIR is the real /opt/restic/bin,
+# not the symlink's own directory - otherwise every dispatch below,
+# and the VERSION lookup, would look in the wrong place.
+SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" &>/dev/null && pwd)"
 
 usage() {
     cat <<'EOF'
