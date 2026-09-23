@@ -1,0 +1,8 @@
+# One absolute path per line - the mount points of the shares to back up.
+# Blank lines and lines starting with # are ignored.
+# Each path is checked with `mountpoint -q` before the backup starts
+# when REQUIRE_MOUNTED=true in restic.env.
+
+/mnt/share-finance
+/mnt/share-engineering
+/mnt/share-hr

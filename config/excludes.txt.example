@@ -1,0 +1,10 @@
+# restic --exclude-file patterns applied to all backup sources.
+# See https://restic.readthedocs.io/en/latest/040_backup.html#excluding-files
+
+**/.DS_Store
+**/Thumbs.db
+**/desktop.ini
+**/~$*
+**/*.tmp
+**/.Trash-*
+**/node_modules

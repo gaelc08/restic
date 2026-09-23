@@ -1,0 +1,9 @@
+/var/log/restic/*.log {
+    daily
+    rotate 90
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root root
+}

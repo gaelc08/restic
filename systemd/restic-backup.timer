@@ -1,0 +1,17 @@
+[Unit]
+Description=Run restic backup of mounted shares daily
+
+[Timer]
+# Daily at 01:00 local time. Adjust to fit your maintenance window;
+# keep it earlier than restic-maintenance.timer so forget/prune runs
+# against the freshest snapshot.
+OnCalendar=*-*-* 01:00:00
+# Spread real start time over 10 minutes to avoid every host in a
+# fleet hitting the S3 endpoint at exactly the same second.
+RandomizedDelaySec=600
+# If the host was off/asleep at 01:00, run as soon as possible after
+# boot instead of silently skipping a day.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

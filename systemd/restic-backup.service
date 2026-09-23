@@ -1,0 +1,40 @@
+[Unit]
+Description=restic backup of mounted shares to S3 Glacier
+Documentation=https://restic.readthedocs.io/
+Wants=network-online.target
+After=network-online.target
+# If your shares are systemd .mount units (or use x-systemd.automount
+# in /etc/fstab), list them here so the unit waits for them instead of
+# racing the mount at boot, e.g.:
+#   RequiresMountsFor=/mnt/share-finance /mnt/share-engineering /mnt/share-hr
+ConditionPathExists=/etc/restic/restic.env
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/restic/restic.env
+ExecStart=/usr/local/bin/restic-backup.sh
+
+# Run as a low-priority, low-io-priority background job so it doesn't
+# starve interactive workloads on the host.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+# All activity is already logged to $LOG_DIR/backup.log by the script
+# itself; also send stdout/stderr to the journal so `journalctl -u
+# restic-backup.service` and log_error()/log_warn() lines are visible
+# there too.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=restic-backup
+
+# Basic hardening. Loosen ProtectSystem/ReadWritePaths if the service
+# user needs write access outside of the cache/tmp/log directories.
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/opt/restic/restic-cache /opt/restic/restic-tmp /var/log/restic
+
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

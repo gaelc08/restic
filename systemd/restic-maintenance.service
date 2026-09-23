@@ -1,0 +1,28 @@
+[Unit]
+Description=restic maintenance (forget/prune retention + check) for S3 Glacier repository
+Documentation=https://restic.readthedocs.io/
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/restic/restic.env
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/restic/restic.env
+ExecStart=/usr/local/bin/restic-maintenance.sh
+
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=restic-maintenance
+
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/opt/restic/restic-cache /opt/restic/restic-tmp /var/log/restic
+
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
