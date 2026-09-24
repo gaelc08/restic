@@ -53,6 +53,7 @@ export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-}"
 # Global restic flags shared by every command (backup, forget, prune,
 # snapshots, check, ...): pack size and backend connection/storage
 # class options.
+# shellcheck disable=SC2034  # used by the scripts that source this file
 RESTIC_GLOBAL_ARGS=(
     --pack-size "$RESTIC_PACK_SIZE"
     -o "s3.connections=${RESTIC_S3_CONNECTIONS}"
@@ -236,9 +237,14 @@ load_retention_policies() {
             die "malformed line in $RETENTION_POLICIES_FILE (expected: name keep_daily keep_weekly keep_monthly keep_yearly): $line"
         fi
 
+        # WEEKLY/MONTHLY/YEARLY are only read by the scripts that source
+        # this file (restic-maintenance.sh).
         POLICY_KEEP_DAILY["$name"]="$daily"
+        # shellcheck disable=SC2034
         POLICY_KEEP_WEEKLY["$name"]="$weekly"
+        # shellcheck disable=SC2034
         POLICY_KEEP_MONTHLY["$name"]="$monthly"
+        # shellcheck disable=SC2034
         POLICY_KEEP_YEARLY["$name"]="$yearly"
     done < "$RETENTION_POLICIES_FILE"
 

@@ -1,0 +1,16 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck --version
+      # Scripts only: config/*.example are sourced variable files or plain
+      # data files, not scripts. Options come from .shellcheckrc.
+      - run: shellcheck install.sh bin/*.sh bin/resticctl
+      - run: bash -n install.sh bin/*.sh bin/resticctl

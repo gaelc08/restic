@@ -94,7 +94,7 @@ forget_rc=${PIPESTATUS[0]}
 
 if [[ $forget_rc -ne 0 ]]; then
     log_error "restic forget FAILED (exit $forget_rc)"
-    exit $forget_rc
+    exit "$forget_rc"
 fi
 log_info "restic forget completed successfully"
 
@@ -106,7 +106,7 @@ if [[ $RUN_PRUNE -eq 1 ]]; then
     prune_rc=${PIPESTATUS[0]}
     if [[ $prune_rc -ne 0 ]]; then
         log_error "restic prune FAILED (exit $prune_rc)"
-        exit $prune_rc
+        exit "$prune_rc"
     fi
     log_info "restic prune completed successfully"
 else

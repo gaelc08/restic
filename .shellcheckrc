@@ -1,0 +1,5 @@
+# Follow `source` into restic-common.sh, resolved relative to each
+# script's own directory (bin/), so sourced variables and functions are
+# known to shellcheck.
+external-sources=true
+source-path=SCRIPTDIR
