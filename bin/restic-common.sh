@@ -37,6 +37,11 @@ REQUIRE_MOUNTED="${REQUIRE_MOUNTED:-true}"
 RESTIC_LOCK_FILE="${RESTIC_LOCK_FILE:-/run/restic/restic.lock}"
 RESTIC_NOTIFY_ON="${RESTIC_NOTIFY_ON:-failure}"
 RESTIC_STATUS_DIR="${RESTIC_STATUS_DIR:-/var/log/restic/status}"
+# Display name/address emails are sent from. Without this, the local
+# MTA falls back to the OS account running the job (e.g. "Super User
+# <root@...>" or similar) - set it explicitly so recipients see
+# something meaningful instead.
+RESTIC_NOTIFY_FROM="${RESTIC_NOTIFY_FROM:-Restic Backup <restic@$(hostname -f 2>/dev/null || hostname)>}"
 
 # restic itself does not read RESTIC_TMP_DIR; it (and the Go runtime)
 # use TMPDIR for scratch space. Export it under the standard name so
@@ -125,23 +130,50 @@ _notify_json_escape() {
     printf '%s' "$s"
 }
 
-# send_email <to> <subject> <body>
+# send_email <to> <subject> <body> [content_type]
 #
-# Sends via whatever local MTA is available (mail, then sendmail).
+# content_type defaults to "text/plain; charset=utf-8" - pass
+# "text/html; charset=utf-8" for an HTML body (restic-report.sh's
+# table needs real HTML to render aligned in mail clients that don't
+# use a monospace font for plain text).
+#
+# Sends via whatever local MTA is available. sendmail is tried first
+# because we build the message ourselves (headers included), which is
+# the only reliable way to set a custom From: - piped through `mail`,
+# most implementations ignore or reject an attempt to set the From
+# display name and fall back to the OS account instead (e.g. "Super
+# User <root@...>"). Falls back to `mail` (with -r, then without, in
+# case this system's `mail` doesn't support -r either) only if
+# sendmail isn't installed - in practice `mail` itself is usually just
+# a thin wrapper around the same sendmail-compatible binary, so this
+# is a narrow case.
+#
 # Shared by notify() and restic-report.sh so there's one place that
 # knows how mail actually goes out. Logs and returns 1 on failure or
 # if no MTA is installed; never exits the caller.
 send_email() {
     local to="$1" subject="$2" body="$3"
-    if command -v mail >/dev/null 2>&1; then
-        printf '%s\n' "$body" | mail -s "$subject" "$to" \
-            || { log_error "send_email: 'mail' failed to send to $to"; return 1; }
-    elif command -v sendmail >/dev/null 2>&1; then
-        printf 'To: %s\nSubject: %s\n\n%s\n' "$to" "$subject" "$body" \
+    local content_type="${4:-text/plain; charset=utf-8}"
+
+    if command -v sendmail >/dev/null 2>&1; then
+        printf 'From: %s\nTo: %s\nSubject: %s\nMIME-Version: 1.0\nContent-Type: %s\n\n%s\n' \
+            "$RESTIC_NOTIFY_FROM" "$to" "$subject" "$content_type" "$body" \
             | sendmail -t \
             || { log_error "send_email: 'sendmail' failed to send to $to"; return 1; }
+    elif command -v mail >/dev/null 2>&1; then
+        if [[ "$content_type" == text/html* ]]; then
+            log_warn "send_email: no 'sendmail' found - falling back to 'mail', which cannot send HTML (recipient will see raw HTML tags)"
+        fi
+        if printf '%s\n' "$body" | mail -s "$subject" -r "$RESTIC_NOTIFY_FROM" "$to" 2>/dev/null; then
+            :
+        elif printf '%s\n' "$body" | mail -s "$subject" "$to"; then
+            log_warn "send_email: this system's 'mail' does not support -r - sent without a custom From address"
+        else
+            log_error "send_email: 'mail' failed to send to $to"
+            return 1
+        fi
     else
-        log_error "send_email: neither 'mail' nor 'sendmail' is installed"
+        log_error "send_email: neither 'sendmail' nor 'mail' is installed"
         return 1
     fi
 }
