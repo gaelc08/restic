@@ -62,18 +62,21 @@ VERSIONEOF
 echo "    wrote $VERSION_FILE:"
 sed 's/^/    /' "$VERSION_FILE"
 
-echo "==> Creating cache/tmp/verify-scratch directories"
+echo "==> Creating cache/tmp directories"
 # These must exist on disk *before* the systemd services ever start:
-# ReadWritePaths= in restic-backup.service / restic-maintenance.service /
-# restic-verify.service bind-mounts them into the service's private
-# mount namespace before ExecStart runs, and unlike the script's own
-# `mkdir -p` (which only runs after that), systemd will not create
-# them for you - it fails with "226/NAMESPACE" instead. If you change
-# RESTIC_CACHE_DIR, RESTIC_TMP_DIR, or RESTIC_VERIFY_SCRATCH_DIR in
-# restic.env away from these defaults, update ReadWritePaths= in the
-# relevant unit file(s) to match and create the new directories the
-# same way.
-mkdir -p /opt/restic/restic-cache /opt/restic/restic-tmp /opt/restic/restic-verify-scratch
+# ReadWritePaths= in restic-backup.service / restic-maintenance.service
+# bind-mounts them into the service's private mount namespace before
+# ExecStart runs, and unlike the script's own `mkdir -p` (which only
+# runs after that), systemd will not create them for you - it fails
+# with "226/NAMESPACE" instead. If you change RESTIC_CACHE_DIR or
+# RESTIC_TMP_DIR in restic.env away from these defaults, update
+# ReadWritePaths= in both unit files to match and create the new
+# directories the same way.
+#
+# restic-verify.sh has no systemd unit (deliberately - see below), so
+# RESTIC_VERIFY_SCRATCH_DIR isn't pre-created here; just make sure the
+# path you set for it in restic.env exists and has real free space.
+mkdir -p /opt/restic/restic-cache /opt/restic/restic-tmp
 
 echo "==> Installing config to /etc/restic (existing files left untouched)"
 mkdir -p /etc/restic
@@ -100,9 +103,12 @@ install -m 0644 "${SCRIPT_DIR}/systemd/restic-backup.service"      /etc/systemd/
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-backup.timer"        /etc/systemd/system/restic-backup.timer
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-maintenance.service" /etc/systemd/system/restic-maintenance.service
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-maintenance.timer"   /etc/systemd/system/restic-maintenance.timer
-install -m 0644 "${SCRIPT_DIR}/systemd/restic-verify.service"      /etc/systemd/system/restic-verify.service
-install -m 0644 "${SCRIPT_DIR}/systemd/restic-verify.timer"        /etc/systemd/system/restic-verify.timer
 systemctl daemon-reload
+# restic-verify.sh deliberately has no systemd unit and no timer - it
+# is a manual/on-demand tool only. A real Glacier/tape restore can
+# take anywhere from minutes to many hours, so scheduling it
+# unattended is considered too risky here; run it by hand
+# (`resticctl verify`) when you actually want to check.
 
 cat <<'EOF'
 
@@ -112,7 +118,10 @@ cat <<'EOF'
     3. Edit /etc/restic/retention-policies.conf  (define your short/mid/long - or other - policies)
     4. Edit /etc/restic/shares.conf              (mount points to back up + policy per share)
     5. Edit /etc/restic/excludes.txt as needed
-    6. If the repository is new:
+    6. If you'll use restore verification (resticctl verify), set
+       RESTIC_VERIFY_SCRATCH_DIR to a path with real free space -
+       there usually isn't enough room under /opt/restic for this.
+    7. If the repository is new:
          set -a; source /etc/restic/restic.env; source /etc/restic/secrets.env; set +a
          restic init --pack-size "$RESTIC_PACK_SIZE" \
              -o s3.storage-class="$RESTIC_S3_STORAGE_CLASS"
@@ -121,13 +130,10 @@ Then enable the daily timers:
     systemctl enable --now restic-backup.timer
     systemctl enable --now restic-maintenance.timer
 
-Restore verification (resticctl verify) is installed but NOT enabled
-as a timer yet - run it manually first and see how it behaves against
-your actual Glacier/tape destination before deciding to schedule it
-(see the header comment in restic-verify.sh and docs/glacier-notes.md):
+Restore verification (resticctl verify) has NO timer and is never
+scheduled - a real Glacier/tape restore can take minutes to many
+hours, so this is manual/on-demand only, by design:
     resticctl verify
-    # once you're happy with it:
-    systemctl enable --now restic-verify.timer
 
 Failure notifications (email/webhook) are opt-in - set
 RESTIC_NOTIFY_EMAIL and/or RESTIC_NOTIFY_WEBHOOK_URL in restic.env.

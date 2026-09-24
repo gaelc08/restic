@@ -72,11 +72,11 @@ underlying scripts directly, not through `resticctl`).
   AWS credentials together) for configuration, and log every run to
   `/var/log/restic/{backup,maintenance}.log` as well as the systemd
   journal (`journalctl -u restic-backup.service`).
-- **restic-verify.timer** (installed but not enabled by default -
-  see "Restore verification" below) can additionally run
-  **restic-verify.service** weekly, which samples a few files from
-  each share's latest snapshot and reads them back with `restic dump`
-  to prove backups are actually restorable, not just present.
+- **`restic-verify.sh` / `resticctl verify`** (see "Restore
+  verification" below) samples a few files from each share's latest
+  snapshot and proves they're actually restorable, not just present.
+  It has no systemd unit and no timer - manual/on-demand only, since a
+  real Glacier/tape restore can take minutes to many hours.
 - **Every job reports its outcome two ways**: a status file
   (`RESTIC_STATUS_DIR`, always written, zero config needed) any
   external monitoring can poll, and an optional email/webhook
@@ -329,52 +329,60 @@ resticctl verify /mnt/share-finance     # just one share
 ```
 
 **Confirmed against this repo's real destination
-(`scrat-1.ctie.etat.lu`): reads need an explicit S3 Glacier restore
-step first**, same as true AWS Glacier - a plain read just times out
-otherwise (which is exactly what the first test run correctly caught).
-`RESTIC_VERIFY_USE_S3_RESTORE` defaults to `true` accordingly, which
-makes `restic-verify.sh` run restic's own two-step Glacier-restore
-sequence for the sampled files:
+(`scrat-1.ctie.etat.lu`): reads need an explicit tape recall first**,
+same as true AWS Glacier. `RESTIC_VERIFY_USE_S3_RESTORE` defaults to
+`true` accordingly, which makes `restic-verify.sh` drive restic's own
+Glacier-restore mechanism for the sampled files:
 
 ```sh
-# 1. trigger the restore and wait for the objects to thaw
+# 1. trigger the tape recall (confirmed: this call itself reliably
+#    FAILS on this destination, even though the recall proceeds
+#    anyway in the background on the gateway's own cache - so its
+#    exit code is logged but never treated as fatal)
 RESTIC_FEATURES=s3-restore restic restore <snapshot> \
     -o s3.enable-restore=1 -o s3.restore-days=<N> -o s3.restore-timeout=<duration> \
     --target <scratch> --include <file> [--include <file> ...]
 
-# 2. plain restore, now that the objects are warm
+# 2. plain restore - retried on a poll interval until it succeeds
+#    (the data has landed) or the time budget runs out, since there's
+#    no other signal for "is it ready yet" than trying again
 restic restore <snapshot> --target <scratch> --include <file> ...
 ```
 
 All sampled files for a share are restored in **one** such pair of
 calls (multiple `--include` flags), not one pair per file, so there's
-one wait per share, not N sequential ones. Restored files land in
-`RESTIC_VERIFY_SCRATCH_DIR` (default `/opt/restic/restic-verify-scratch`)
-just long enough to confirm each landed with non-zero size, then the
-scratch directory is deleted - on every code path, success or failure.
+one recall + poll loop per share, not N sequential ones. Restored
+files land in `RESTIC_VERIFY_SCRATCH_DIR` just long enough to confirm
+each landed with non-zero size, then the scratch directory is deleted
+- on every code path, success or failure.
 
-Tune `RESTIC_VERIFY_RESTORE_DAYS` (how long the thawed copy stays warm
-on the Glacier side) and `RESTIC_VERIFY_RESTORE_TIMEOUT` (how long
-restic itself waits for objects to thaw - a Go duration like `24h`,
-`90m`, `1h30m`) to match how long your tape robot actually takes.
-`restic-verify.sh` also wraps the whole sequence in its own outer
-`timeout` (that value plus a 10-minute buffer) as a safety net in case
-restic's own wait doesn't trigger correctly.
+**`RESTIC_VERIFY_SCRATCH_DIR` has no default and must be set** in
+`restic.env` before this can run - point it at a path with real free
+space. `/opt/restic` does not have enough room for this on this host,
+so it is deliberately not used as a fallback.
+
+Tune:
+- `RESTIC_VERIFY_RESTORE_DAYS` - how long the thawed copy stays warm
+  on the Glacier side.
+- `RESTIC_VERIFY_RESTORE_TIMEOUT` - total time budget for the poll
+  loop (a Go duration like `24h`, `90m`, `1h30m`), matched to how long
+  a real recall actually takes on your tape robot.
+- `RESTIC_VERIFY_POLL_INTERVAL` - seconds between poll attempts
+  (default 60).
+- `RESTIC_VERIFY_ATTEMPT_TIMEOUT` - max seconds any single restic call
+  (the trigger, or one poll attempt) may run before being killed
+  (default 120), independent of the overall budget above.
 
 If your destination instead serves reads transparently (no restore
 step needed), set `RESTIC_VERIFY_USE_S3_RESTORE=false` to fall back to
 the older, cheaper approach: streaming each sampled file straight back
 with `restic dump` under `RESTIC_VERIFY_TIMEOUT` (default 300s).
 
-**Even with the restore step working, think before scheduling
-`restic-verify.timer`.** A real Glacier/tape restore can take anywhere
-from minutes to many hours depending on the robot - `resticctl verify`
-is not a quick job here. `install.sh` installs the timer but
-deliberately does not enable it
-(`systemctl enable --now restic-verify.timer` when you're ready); a
-weekly cadence with a generous window (the shipped timer runs Sunday
-02:00) is a reasonable starting point, but confirm a manual run's
-actual duration first so it doesn't collide with anything else.
+**There is no systemd timer for this, on purpose.** A real Glacier/
+tape restore can take anywhere from minutes to many hours depending on
+the robot, and running that unattended on a schedule was judged too
+risky - `restic-verify.sh` is a manual/on-demand tool only. Run it by
+hand whenever you actually want to check: `resticctl verify`.
 
 A share with zero snapshots is reported as a failure too (nothing to
 verify means something's wrong, not nothing to do), and an empty

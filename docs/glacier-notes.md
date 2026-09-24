@@ -106,13 +106,20 @@ uses by default (`RESTIC_VERIFY_USE_S3_RESTORE=true`), and it's also
 this repository, not just for verification:
 
 ```sh
-# 1. trigger the S3 restore for whatever objects this snapshot/path
-#    needs, and wait (up to -o s3.restore-timeout) for them to thaw
+# 1. trigger the tape recall. Confirmed against this repo's real
+#    destination: this command itself reliably FAILS - but the recall
+#    proceeds anyway in the background on the gateway's own tape
+#    cache, independent of this process's exit code or lifetime.
 RESTIC_FEATURES=s3-restore restic -r "$RESTIC_REPOSITORY" restore <snapshot-id> \
     -o s3.enable-restore=1 -o s3.restore-days=1 -o s3.restore-timeout=24h \
     --target <restore-path>
 
-# 2. plain restore, now that the objects are warm
+# 2. plain restore - retry this periodically until it succeeds. There
+#    is no reliable external signal for "the tape has finished
+#    mounting/seeking and the data is now cached" other than trying
+#    again; restic-verify.sh does this as a poll loop
+#    (RESTIC_VERIFY_POLL_INTERVAL) bounded by an overall time budget
+#    (RESTIC_VERIFY_RESTORE_TIMEOUT).
 restic -r "$RESTIC_REPOSITORY" restore <snapshot-id> --target <restore-path>
 ```
 
@@ -122,18 +129,25 @@ Notes:
   command - it's an experimental-feature opt-in for the `-o
   s3.enable-restore=...` options, which the second (plain) restore
   doesn't use.
+- **Do not treat the first command's exit code as authoritative.** On
+  this destination it fails every time, by design of the gateway, not
+  because anything is wrong - the recall still happens. Only the
+  second command's eventual success tells you the data is actually
+  available.
 - `-o s3.restore-days` controls how many days the thawed copy stays
   available before reverting to archive; `-o s3.restore-timeout` is
-  how long restic itself will wait for objects to thaw (a Go duration
-  like `24h`, `90m`) before giving up - tune both to your tape robot's
-  actual behavior and how much time you can give a real restore.
+  restic's own (here, unreliable on this destination) internal wait -
+  set it anyway to match the command, but don't depend on it to signal
+  completion; poll with the plain restore instead.
 - restic figures out which pack objects a given restore actually needs
   and restores those - you don't need to work out S3 keys by hand, and
   you can restrict scope with the usual `--include`/`--path` filters
-  to restore (and therefore only need to thaw) a subset of a snapshot.
-- Add `--target` under a scratch/DR location, not back onto the live
-  share, until you've confirmed the restored content is what you
-  expect.
+  to restore (and therefore only need to recall) a subset of a
+  snapshot.
+- Use `--target` under a scratch/DR location with real free disk
+  space - not back onto the live share, and not under `/opt/restic`
+  (not enough room there) - until you've confirmed the restored
+  content is what you expect.
 
 For destinations that serve reads transparently instead (no restore
 step needed - true of AWS Glacier Instant Retrieval and many on-prem
@@ -142,8 +156,9 @@ restore` or `restic dump` just works. Set
 `RESTIC_VERIFY_USE_S3_RESTORE=false` in that case so `restic-verify.sh`
 uses the cheaper direct-read path instead.
 
-This is also why `restic-verify.timer` is installed but never
-auto-enabled by `install.sh`: even with the restore mechanism working,
-a real restore against a tape-backed destination can take anywhere
-from minutes to many hours, so it needs a deliberate decision about
-scheduling rather than a default-on timer.
+This is also why `restic-verify.sh` has no systemd unit or timer at
+all, by design: even with the restore mechanism working, a real
+restore against a tape-backed destination can take anywhere from
+minutes to many hours, and unattended scheduling was judged too risky.
+It's a manual/on-demand tool - run `resticctl verify` yourself when
+you want to check.
