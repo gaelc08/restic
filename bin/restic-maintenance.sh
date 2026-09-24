@@ -17,6 +17,25 @@
 # the only way to keep, say, a "long" retention share's history intact
 # while a "short" retention share's older snapshots are forgotten.
 #
+# Scoped to --tag "${RESTIC_BACKUP_TAG:-scheduled}" (i.e. only the
+# timer-triggered runs, never `restic-backup.sh --manual`): without
+# this, an ad-hoc manual backup taken the same day as the scheduled one
+# would win that day's --keep-daily slot (restic keeps only the latest
+# snapshot per calendar day, regardless of tag), forgetting the actual
+# scheduled backup early even though the policy's day-count wasn't
+# reached yet. Manual snapshots are simply left alone by this automated
+# retention - clean them up by hand with resticctl forget when you no
+# longer need them.
+#
+# The "daily" number from retention-policies.conf is applied as
+# --keep-within "${daily}d" rather than --keep-daily: a policy of e.g.
+# 30 must mean "every scheduled snapshot from the last 30 days stays",
+# a plain rolling time window - not restic's --keep-daily semantics of
+# "keep the latest snapshot from each of the last 30 calendar days that
+# has one", which would still collapse two scheduled runs landing on
+# the same day (a timer catch-up after downtime, a DST-boundary day) to
+# just one of them.
+#
 # IMPORTANT: --max-repack-size 0 is always passed to the single, final
 # prune. The repository's data lives behind S3 Glacier / tape. Without
 # this flag, `restic prune` may try to repack (rewrite) pack files
@@ -48,6 +67,8 @@ log_info "acquired lock $RESTIC_LOCK_FILE"
 parse_shares_file
 log_info "shares: ${SHARE_PATHS[*]}"
 
+SCHEDULED_TAG="${RESTIC_BACKUP_TAG:-scheduled}"
+
 FORGET_FAILED=0
 FORGET_FAILED_SHARES=()
 
@@ -60,15 +81,16 @@ for i in "${!SHARE_PATHS[@]}"; do
     monthly="${POLICY_KEEP_MONTHLY[$policy]}"
     yearly="${POLICY_KEEP_YEARLY[$policy]}"
 
-    log_info "applying policy '$policy' to share '$share_name' ($path): daily=$daily weekly=$weekly monthly=$monthly yearly=$yearly"
+    log_info "applying policy '$policy' to share '$share_name' ($path): keep-within=${daily}d weekly=$weekly monthly=$monthly yearly=$yearly (tag=$SCHEDULED_TAG only - manual backups are untouched)"
 
     # shellcheck disable=SC2054  # "host,paths" is one argument, the comma is intended
     FORGET_ARGS=(
         forget
         "${RESTIC_GLOBAL_ARGS[@]}"
+        --tag "$SCHEDULED_TAG"
         --path "$path"
         --group-by host,paths
-        --keep-daily "$daily"
+        --keep-within "${daily}d"
         --keep-weekly "$weekly"
         --keep-monthly "$monthly"
         --keep-yearly "$yearly"

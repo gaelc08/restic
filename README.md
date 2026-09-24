@@ -241,12 +241,28 @@ every share to a single combined `restic backup` call.
 `bin/restic-maintenance.sh`, once per share:
 
 ```
-restic forget --path <share> --group-by host,paths \
-    --keep-daily N --keep-weekly N --keep-monthly N --keep-yearly N
+restic forget --tag scheduled --path <share> --group-by host,paths \
+    --keep-within Nd --keep-weekly N --keep-monthly N --keep-yearly N
 ```
 
-using that share's own numbers from `retention-policies.conf`, then
-once for the whole repository:
+using that share's own numbers from `retention-policies.conf` (the
+`daily` column becomes the `N` in `--keep-within Nd`), then once for
+the whole repository:
+
+`--tag scheduled` (or `RESTIC_BACKUP_TAG` if you changed it) matters:
+without it, forget would also consider ad-hoc `restic-backup.sh
+--manual` snapshots, and since restic's `--keep-daily`/`--keep-within`
+only ever keep the *latest* snapshot per matching period, a manual
+backup taken the same day as the scheduled one would win that slot -
+forgetting the actual scheduled backup early. Scoping to `--tag
+scheduled` means manual snapshots are never touched by this automated
+policy at all; clean them up by hand with `resticctl forget` when
+you're done with them. The daily tier uses `--keep-within Nd` rather
+than `--keep-daily N` for the same reason in miniature: "keep every
+scheduled snapshot from the last N days" is a plain rolling window,
+where `--keep-daily` still buckets by calendar day and would collapse
+two scheduled runs landing on the same day (a timer catch-up after
+downtime, a DST-boundary day) down to one.
 
 ```
 restic prune --max-repack-size 0

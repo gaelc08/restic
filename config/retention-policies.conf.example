@@ -3,8 +3,15 @@
 #
 # Format (whitespace-separated): name  keep_daily  keep_weekly  keep_monthly  keep_yearly
 # Blank lines and lines starting with # are ignored. Values map
-# directly to restic's `forget --keep-daily/--keep-weekly/
-# --keep-monthly/--keep-yearly`; 0 means "keep none at that tier".
+# to restic's forget flags applied by restic-maintenance.sh:
+#   keep_daily   -> --keep-within <N>d  (every scheduled snapshot from
+#                   the last N days - a rolling window, not restic's
+#                   own --keep-daily "latest per calendar day" bucketing)
+#   keep_weekly/monthly/yearly -> --keep-weekly/--keep-monthly/--keep-yearly
+# 0 means "keep none at that tier". restic-maintenance.sh only ever
+# applies this to snapshots tagged RESTIC_BACKUP_TAG (default
+# "scheduled") - manual backups (`restic-backup.sh --manual`) are never
+# auto-forgotten, so they can't take a scheduled snapshot's slot.
 #
 # The three shipped here mirror Cohesity's short/mid/long retention
 # tiers - adjust the numbers (and add more named policies) to match
