@@ -73,9 +73,9 @@ echo "==> Creating cache/tmp directories"
 # ReadWritePaths= in both unit files to match and create the new
 # directories the same way.
 #
-# restic-verify.sh has no systemd unit (deliberately - see below), so
-# RESTIC_VERIFY_SCRATCH_DIR isn't pre-created here; just make sure the
-# path you set for it in restic.env exists and has real free space.
+# restic-verify.sh has no systemd unit and takes its restore target as
+# a required --target argument each time (not a config setting), so
+# there's nothing to pre-create here for it.
 mkdir -p /opt/restic/restic-cache /opt/restic/restic-tmp
 
 echo "==> Installing config to /etc/restic (existing files left untouched)"
@@ -118,10 +118,7 @@ cat <<'EOF'
     3. Edit /etc/restic/retention-policies.conf  (define your short/mid/long - or other - policies)
     4. Edit /etc/restic/shares.conf              (mount points to back up + policy per share)
     5. Edit /etc/restic/excludes.txt as needed
-    6. If you'll use restore verification (resticctl verify), set
-       RESTIC_VERIFY_SCRATCH_DIR to a path with real free space -
-       there usually isn't enough room under /opt/restic for this.
-    7. If the repository is new:
+    6. If the repository is new:
          set -a; source /etc/restic/restic.env; source /etc/restic/secrets.env; set +a
          restic init --pack-size "$RESTIC_PACK_SIZE" \
              -o s3.storage-class="$RESTIC_S3_STORAGE_CLASS"
@@ -132,8 +129,10 @@ Then enable the daily timers:
 
 Restore verification (resticctl verify) has NO timer and is never
 scheduled - a real Glacier/tape restore can take minutes to many
-hours, so this is manual/on-demand only, by design:
-    resticctl verify
+hours, so this is manual/on-demand only, by design. Every run needs an
+explicit --target (a path with real free disk space - not enough room
+under /opt/restic for this):
+    resticctl verify --target /path/with/free/space
 
 Failure notifications (email/webhook) are opt-in - set
 RESTIC_NOTIFY_EMAIL and/or RESTIC_NOTIFY_WEBHOOK_URL in restic.env.
@@ -150,7 +149,7 @@ Or drive everything through the resticctl CLI (installed onto PATH):
     resticctl status
     resticctl backup --manual
     resticctl maintenance
-    resticctl verify
+    resticctl verify --target /path/with/free/space
     resticctl list --path /mnt/your-share
     resticctl delete <snapshot-id>
     resticctl version

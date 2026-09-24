@@ -324,8 +324,8 @@ configured share, it takes the latest snapshot and samples a handful
 of files (`RESTIC_VERIFY_SAMPLE_FILES`, default 3).
 
 ```sh
-resticctl verify                        # every configured share
-resticctl verify /mnt/share-finance     # just one share
+resticctl verify --target /path/with/free/space                       # every configured share
+resticctl verify --target /path/with/free/space /mnt/share-finance    # just one share
 ```
 
 **Confirmed against this repo's real destination
@@ -341,25 +341,28 @@ Glacier-restore mechanism for the sampled files:
 #    exit code is logged but never treated as fatal)
 RESTIC_FEATURES=s3-restore restic restore <snapshot> \
     -o s3.enable-restore=1 -o s3.restore-days=<N> -o s3.restore-timeout=<duration> \
-    --target <scratch> --include <file> [--include <file> ...]
+    --target <target> --include <file> [--include <file> ...]
 
 # 2. plain restore - retried on a poll interval until it succeeds
 #    (the data has landed) or the time budget runs out, since there's
 #    no other signal for "is it ready yet" than trying again
-restic restore <snapshot> --target <scratch> --include <file> ...
+restic restore <snapshot> --target <target> --include <file> ...
 ```
 
 All sampled files for a share are restored in **one** such pair of
 calls (multiple `--include` flags), not one pair per file, so there's
 one recall + poll loop per share, not N sequential ones. Restored
-files land in `RESTIC_VERIFY_SCRATCH_DIR` just long enough to confirm
-each landed with non-zero size, then the scratch directory is deleted
-- on every code path, success or failure.
+files land under `--target` just long enough to confirm each landed
+with non-zero size, then that sample is deleted again - on every code
+path, success or failure (only this run's own restored files are
+removed, never anything else already in `--target`).
 
-**`RESTIC_VERIFY_SCRATCH_DIR` has no default and must be set** in
-`restic.env` before this can run - point it at a path with real free
-space. `/opt/restic` does not have enough room for this on this host,
-so it is deliberately not used as a fallback.
+**`--target <path>` is a required argument, every time - there is no
+configured or default location.** This is intentionally a manual,
+deliberate restore test: you decide where there's real free disk space
+each time you run it, rather than relying on a fixed setting that
+could go stale or point somewhere without room. `/opt/restic` does not
+have enough room for this on this host, so don't point it there.
 
 Tune:
 - `RESTIC_VERIFY_RESTORE_DAYS` - how long the thawed copy stays warm
@@ -382,7 +385,7 @@ with `restic dump` under `RESTIC_VERIFY_TIMEOUT` (default 300s).
 tape restore can take anywhere from minutes to many hours depending on
 the robot, and running that unattended on a schedule was judged too
 risky - `restic-verify.sh` is a manual/on-demand tool only. Run it by
-hand whenever you actually want to check: `resticctl verify`.
+hand whenever you actually want to check.
 
 A share with zero snapshots is reported as a failure too (nothing to
 verify means something's wrong, not nothing to do), and an empty

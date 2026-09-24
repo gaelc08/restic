@@ -32,13 +32,19 @@
 #   wait for the whole share, not N sequential waits.
 #
 # It never restores a whole snapshot - only the sampled files - and
-# the scratch directory is always removed afterward, regardless of
-# success or failure. RESTIC_VERIFY_SCRATCH_DIR has no default: it
-# must point at a location with real free space (NOT /opt/restic - not
-# enough room there) and must be set explicitly in restic.env.
+# the target directory's contents are always removed afterward,
+# regardless of success or failure - only this run's restored sample
+# files, nothing that was already there.
 #
-# Usage: restic-verify.sh [share-path]
-#   With no argument, verifies every configured share. With a path
+# Usage: restic-verify.sh --target <path> [share-path]
+#   --target <path> is REQUIRED when RESTIC_VERIFY_USE_S3_RESTORE=true
+#   (the default) - there is deliberately no configured/default
+#   location: this is a manual, deliberate restore test, and you must
+#   say explicitly, every time, where there is real free disk space to
+#   restore into (NOT /opt/restic - not enough room there). Not needed
+#   in dump mode (RESTIC_VERIFY_USE_S3_RESTORE=false).
+#
+#   With no share-path, verifies every configured share. With a path
 #   (must match an entry in shares.conf), verifies only that one.
 
 set -uo pipefail
@@ -78,28 +84,48 @@ _duration_to_seconds() {
     echo "$total"
 }
 
+# --- argument parsing ---------------------------------------------------
+
+TARGET_DIR=""
+ONLY_PATH=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --target)
+            [[ $# -ge 2 ]] || die "--target requires a path argument"
+            TARGET_DIR="${2%/}"
+            shift 2
+            ;;
+        --target=*)
+            TARGET_DIR="${1#--target=}"
+            TARGET_DIR="${TARGET_DIR%/}"
+            shift
+            ;;
+        *)
+            ONLY_PATH="${1%/}"
+            shift
+            ;;
+    esac
+done
+
 if [[ "$RESTIC_VERIFY_USE_S3_RESTORE" == "true" ]]; then
-    : "${RESTIC_VERIFY_SCRATCH_DIR:?RESTIC_VERIFY_SCRATCH_DIR must be set in restic.env to a path with real free space (not under /opt/restic) when RESTIC_VERIFY_USE_S3_RESTORE=true}"
+    if [[ -z "$TARGET_DIR" ]]; then
+        die "usage: restic-verify.sh --target <path-with-free-space> [share-path] (--target is required in s3-restore mode - see the header comment for why)"
+    fi
+    [[ -d "$TARGET_DIR" ]] || die "--target directory does not exist: $TARGET_DIR"
     RESTORE_TIMEOUT_SECONDS=$(_duration_to_seconds "$RESTIC_VERIFY_RESTORE_TIMEOUT")
     [[ "$RESTORE_TIMEOUT_SECONDS" -gt 0 ]] || die "could not parse RESTIC_VERIFY_RESTORE_TIMEOUT='$RESTIC_VERIFY_RESTORE_TIMEOUT' (expected a Go duration like 24h, 90m, 1h30m)"
-    mkdir -p "$RESTIC_VERIFY_SCRATCH_DIR"
 else
     RESTIC_VERIFY_TIMEOUT="${RESTIC_VERIFY_TIMEOUT:-300}"
 fi
 
 START_TS=$(date +%s)
 if [[ "$RESTIC_VERIFY_USE_S3_RESTORE" == "true" ]]; then
-    log_info "===== restic verify starting (repo: ${RESTIC_REPOSITORY}, sample=${RESTIC_VERIFY_SAMPLE_FILES} files/share, mode=s3-restore, restore-days=${RESTIC_VERIFY_RESTORE_DAYS}, restore-timeout=${RESTIC_VERIFY_RESTORE_TIMEOUT}) ====="
+    log_info "===== restic verify starting (repo: ${RESTIC_REPOSITORY}, sample=${RESTIC_VERIFY_SAMPLE_FILES} files/share, mode=s3-restore, target=${TARGET_DIR}, restore-days=${RESTIC_VERIFY_RESTORE_DAYS}, restore-timeout=${RESTIC_VERIFY_RESTORE_TIMEOUT}) ====="
 else
     log_info "===== restic verify starting (repo: ${RESTIC_REPOSITORY}, sample=${RESTIC_VERIFY_SAMPLE_FILES} files/share, mode=dump, timeout=${RESTIC_VERIFY_TIMEOUT}s/file) ====="
 fi
 
 parse_shares_file
-
-ONLY_PATH="${1:-}"
-if [[ -n "$ONLY_PATH" ]]; then
-    ONLY_PATH="${ONLY_PATH%/}"
-fi
 
 TOTAL_FAILED=0
 FAILED_SHARES=()
@@ -140,7 +166,7 @@ verify_share_via_s3_restore() {
     done
 
     local scratch_dir
-    scratch_dir="$(mktemp -d -p "$RESTIC_VERIFY_SCRATCH_DIR" "verify-${share_name}-XXXXXX")"
+    scratch_dir="$(mktemp -d -p "$TARGET_DIR" "verify-${share_name}-XXXXXX")"
 
     # Single exit point (falls through to "done" at the bottom) so the
     # scratch dir is always cleaned up on every path - no early

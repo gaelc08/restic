@@ -10,7 +10,7 @@
 #   resticctl maintenance
 #   resticctl list [restic snapshots flags...]
 #   resticctl delete [--yes] [--no-prune] <snapshot-id...>
-#   resticctl verify [share-path]
+#   resticctl verify --target <path> [share-path]
 #   resticctl version
 #   resticctl status
 #   resticctl help
@@ -50,14 +50,17 @@ Commands:
                                   instead of explicit IDs, e.g.:
                                     resticctl delete --tag share:test --keep-last 1
 
-  verify [share-path]            Prove backups are actually restorable:
+  verify --target <path> [share-path]
+                                  Prove backups are actually restorable:
                                   samples a few files from each share's
-                                  latest snapshot and reads them back.
-                                  With a path, verifies only that share.
-                                  Read the header in restic-verify.sh
-                                  before scheduling this - whether it's
-                                  safe to run unattended depends on your
-                                  Glacier/tape destination's read behavior.
+                                  latest snapshot and restores them under
+                                  --target (required every time - a path
+                                  with real free disk space, never
+                                  configured/defaulted). With a share
+                                  path, verifies only that share. Manual/
+                                  on-demand only - there is no timer for
+                                  this, on purpose. See restic-verify.sh's
+                                  header comment and docs/glacier-notes.md.
 
   version                        Show the deployed commit (VERSION file).
 
