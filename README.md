@@ -28,7 +28,8 @@ resticctl backup [--manual] [share-path]  # backup all shares, or just one
 resticctl maintenance           # apply retention + prune + check
 resticctl list [flags...]       # list snapshots (restic snapshots flags)
 resticctl delete [flags...]     # remove snapshot(s), see below
-resticctl verify [share-path]   # prove backups are actually restorable, see below
+resticctl verify --target <path> [share-path]  # prove backups are actually restorable, see below
+resticctl report                # email the daily status digest, see below
 resticctl version               # what commit is deployed
 resticctl status                # timer schedule + each service's last run/status
 resticctl help
@@ -82,6 +83,12 @@ underlying scripts directly, not through `resticctl`).
   external monitoring can poll, and an optional email/webhook
   notification on failure (or always, if configured) - see
   "Alerting on failure" below.
+- **restic-report.timer** fires **restic-report.service** daily at
+  06:00, which runs `/opt/restic/bin/restic-report.sh`: emails one
+  plain-text digest (last backup/maintenance/verify status + a
+  per-share snapshot summary). Unlike verify, this only reads local
+  status files and fast metadata, so it's safe to schedule - see
+  "Daily status report" below.
 - `restic-snapshots.sh` is a standalone script (and sourceable shell
   function) to list snapshots on demand.
 
@@ -427,6 +434,54 @@ configured in `restic.env`:
    empty to disable it - both are independent and optional. By
    default (`RESTIC_NOTIFY_ON=failure`) you only hear about failures
    and warnings, not a confirmation on every routine success.
+
+## Daily status report
+
+Separate from failure alerting above: `restic-report.sh` /
+`resticctl report` emails one plain-text digest covering the last
+backup, maintenance, and (manual) verify status, plus a per-share
+snapshot summary - a daily "how's everything doing" overview, sent
+regardless of `RESTIC_NOTIFY_ON`.
+
+```sh
+resticctl report
+```
+
+```
+Rapport quotidien restic - manny-01 - 2026-09-24 06:00 CEST
+
+=== Backup ===
+  Statut: success  (2026-09-24T01:00:12+02:00)
+  restic backup on manny-01 completed successfully in 42s (3 share(s)).
+
+=== Maintenance ===
+  Statut: success  (2026-09-24T00:00:05+02:00)
+  restic maintenance on manny-01 completed successfully in 5s (3 share(s)).
+
+=== Verification de restore (manuelle, sur demande - pas de planification automatique) ===
+  Aucune execution enregistree.
+
+=== Shares (dernier snapshot) ===
+paths [/mnt/share-finance]
+ID        Time                 Host       Tags                                Size
+...
+```
+
+Sent to `RESTIC_REPORT_EMAIL`, falling back to `RESTIC_NOTIFY_EMAIL`
+if unset; if neither is set, the report is still generated and logged
+to `REPORT_LOG_FILE`, just not emailed. It reuses the same `send_email`
+delivery path as failure alerting (same MTA requirement), and reads
+the per-share summary via a single fast `restic snapshots --group-by
+paths --latest 1` call.
+
+Unlike `restic-verify.sh`, this never touches archived pack data or
+takes the backup/maintenance lock - only local status files and fast
+metadata - so `restic-report.timer` (daily at 06:00, comfortably after
+the 00:00/01:00 maintenance/backup runs) is safe to enable:
+
+```sh
+systemctl enable --now restic-report.timer
+```
 
 ## Logging
 

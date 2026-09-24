@@ -1,0 +1,14 @@
+[Unit]
+Description=Send the restic daily status report
+
+[Timer]
+# Daily at 06:00 local time - comfortably after the 00:00 maintenance
+# and 01:00 backup runs (both typically finish in seconds to minutes),
+# so the report reflects that day's actual results. Adjust if your
+# backups routinely take longer than this window.
+OnCalendar=*-*-* 06:00:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

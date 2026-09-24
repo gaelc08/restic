@@ -11,6 +11,7 @@
 #   resticctl list [restic snapshots flags...]
 #   resticctl delete [--yes] [--no-prune] <snapshot-id...>
 #   resticctl verify --target <path> [share-path]
+#   resticctl report
 #   resticctl version
 #   resticctl status
 #   resticctl help
@@ -62,6 +63,14 @@ Commands:
                                   this, on purpose. See restic-verify.sh's
                                   header comment and docs/glacier-notes.md.
 
+  report                          Email a daily digest (last backup/
+                                  maintenance/verify status + a
+                                  per-share snapshot summary) to
+                                  RESTIC_REPORT_EMAIL (or
+                                  RESTIC_NOTIFY_EMAIL). Only reads
+                                  local status files and fast metadata -
+                                  safe to schedule daily.
+
   version                        Show the deployed commit (VERSION file).
 
   status                         Show timer schedule, each service's
@@ -94,6 +103,9 @@ case "$cmd" in
         ;;
     verify)
         exec "${SCRIPT_DIR}/restic-verify.sh" "$@"
+        ;;
+    report)
+        exec "${SCRIPT_DIR}/restic-report.sh" "$@"
         ;;
     version)
         if [[ -r "${SCRIPT_DIR}/VERSION" ]]; then

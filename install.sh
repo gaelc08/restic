@@ -26,6 +26,7 @@ install -m 0755 "${SCRIPT_DIR}/bin/restic-maintenance.sh" /opt/restic/bin/restic
 install -m 0755 "${SCRIPT_DIR}/bin/restic-snapshots.sh"   /opt/restic/bin/restic-snapshots.sh
 install -m 0755 "${SCRIPT_DIR}/bin/restic-forget.sh"      /opt/restic/bin/restic-forget.sh
 install -m 0755 "${SCRIPT_DIR}/bin/restic-verify.sh"      /opt/restic/bin/restic-verify.sh
+install -m 0755 "${SCRIPT_DIR}/bin/restic-report.sh"      /opt/restic/bin/restic-report.sh
 install -m 0644 "${SCRIPT_DIR}/bin/restic-common.sh"      /opt/restic/bin/restic-common.sh
 install -m 0755 "${SCRIPT_DIR}/bin/resticctl"              /opt/restic/bin/resticctl
 
@@ -103,6 +104,8 @@ install -m 0644 "${SCRIPT_DIR}/systemd/restic-backup.service"      /etc/systemd/
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-backup.timer"        /etc/systemd/system/restic-backup.timer
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-maintenance.service" /etc/systemd/system/restic-maintenance.service
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-maintenance.timer"   /etc/systemd/system/restic-maintenance.timer
+install -m 0644 "${SCRIPT_DIR}/systemd/restic-report.service"      /etc/systemd/system/restic-report.service
+install -m 0644 "${SCRIPT_DIR}/systemd/restic-report.timer"        /etc/systemd/system/restic-report.timer
 systemctl daemon-reload
 # restic-verify.sh deliberately has no systemd unit and no timer - it
 # is a manual/on-demand tool only. A real Glacier/tape restore can
@@ -127,6 +130,12 @@ Then enable the daily timers:
     systemctl enable --now restic-backup.timer
     systemctl enable --now restic-maintenance.timer
 
+The daily email report (backup/maintenance/verify status + a
+per-share snapshot summary) only reads local status files and fast
+metadata, so it's safe to schedule too - enable it once
+RESTIC_NOTIFY_EMAIL and/or RESTIC_REPORT_EMAIL is set in restic.env:
+    systemctl enable --now restic-report.timer
+
 Restore verification (resticctl verify) has NO timer and is never
 scheduled - a real Glacier/tape restore can take minutes to many
 hours, so this is manual/on-demand only, by design. Every run needs an
@@ -150,6 +159,7 @@ Or drive everything through the resticctl CLI (installed onto PATH):
     resticctl backup --manual
     resticctl maintenance
     resticctl verify --target /path/with/free/space
+    resticctl report
     resticctl list --path /mnt/your-share
     resticctl delete <snapshot-id>
     resticctl version

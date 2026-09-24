@@ -125,6 +125,27 @@ _notify_json_escape() {
     printf '%s' "$s"
 }
 
+# send_email <to> <subject> <body>
+#
+# Sends via whatever local MTA is available (mail, then sendmail).
+# Shared by notify() and restic-report.sh so there's one place that
+# knows how mail actually goes out. Logs and returns 1 on failure or
+# if no MTA is installed; never exits the caller.
+send_email() {
+    local to="$1" subject="$2" body="$3"
+    if command -v mail >/dev/null 2>&1; then
+        printf '%s\n' "$body" | mail -s "$subject" "$to" \
+            || { log_error "send_email: 'mail' failed to send to $to"; return 1; }
+    elif command -v sendmail >/dev/null 2>&1; then
+        printf 'To: %s\nSubject: %s\n\n%s\n' "$to" "$subject" "$body" \
+            | sendmail -t \
+            || { log_error "send_email: 'sendmail' failed to send to $to"; return 1; }
+    else
+        log_error "send_email: neither 'mail' nor 'sendmail' is installed"
+        return 1
+    fi
+}
+
 # notify <job> <status> <summary>
 #
 # Always updates the status file (see write_status_file). Sends
@@ -150,16 +171,7 @@ notify() {
     subject="[restic] ${job} ${status} on ${host}"
 
     if [[ -n "${RESTIC_NOTIFY_EMAIL:-}" ]]; then
-        if command -v mail >/dev/null 2>&1; then
-            printf '%s\n' "$summary" | mail -s "$subject" "$RESTIC_NOTIFY_EMAIL" \
-                || log_error "notify: 'mail' failed to send to $RESTIC_NOTIFY_EMAIL"
-        elif command -v sendmail >/dev/null 2>&1; then
-            printf 'To: %s\nSubject: %s\n\n%s\n' "$RESTIC_NOTIFY_EMAIL" "$subject" "$summary" \
-                | sendmail -t \
-                || log_error "notify: 'sendmail' failed to send to $RESTIC_NOTIFY_EMAIL"
-        else
-            log_error "notify: RESTIC_NOTIFY_EMAIL is set but neither 'mail' nor 'sendmail' is installed"
-        fi
+        send_email "$RESTIC_NOTIFY_EMAIL" "$subject" "$summary"
     fi
 
     if [[ -n "${RESTIC_NOTIFY_WEBHOOK_URL:-}" ]]; then
