@@ -6,7 +6,7 @@
 # logic is duplicated or reimplemented here.
 #
 # Usage:
-#   resticctl backup [--manual]
+#   resticctl backup [--manual] [share-path]
 #   resticctl maintenance
 #   resticctl list [restic snapshots flags...]
 #   resticctl delete [--yes] [--no-prune] <snapshot-id...>
@@ -29,7 +29,8 @@ usage() {
 Usage: resticctl <command> [args...]
 
 Commands:
-  backup [--manual]              Run a backup of all configured shares.
+  backup [--manual] [share-path] Run a backup of all configured shares,
+                                  or just one with a share path.
                                   --manual tags the run "manual" instead
                                   of the configured RESTIC_BACKUP_TAG.
 

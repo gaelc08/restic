@@ -24,7 +24,7 @@ subcommands - `install.sh` links it onto `PATH`
 installed:
 
 ```sh
-resticctl backup [--manual]     # run a backup of all configured shares
+resticctl backup [--manual] [share-path]  # backup all shares, or just one
 resticctl maintenance           # apply retention + prune + check
 resticctl list [flags...]       # list snapshots (restic snapshots flags)
 resticctl delete [flags...]     # remove snapshot(s), see below
@@ -513,6 +513,17 @@ sudo /opt/restic/bin/restic-backup.sh --manual
 
 which tags the resulting snapshot(s) `manual` instead of `scheduled`
 (the per-share `share:<name>` and `policy:<name>` tags are unaffected).
+
+To back up just one share instead of every configured one, add its
+path (in either order relative to `--manual`):
+
+```sh
+resticctl backup /mnt/share-finance
+resticctl backup --manual /mnt/share-finance
+```
+
+An unrelated share being missing or unmounted never blocks a
+single-share run - only the requested share's mount status is checked.
 
 ## Development
 

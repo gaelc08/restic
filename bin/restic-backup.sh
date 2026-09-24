@@ -15,7 +15,7 @@
 # failed outright. See
 # https://restic.readthedocs.io/en/latest/040_backup.html#exit-status-codes
 #
-# Usage: restic-backup.sh [--manual]
+# Usage: restic-backup.sh [--manual] [share-path]
 #   --manual tags the run "manual" instead of RESTIC_BACKUP_TAG
 #   ("scheduled" by default). Systemd gives no reliable way to tell a
 #   timer-triggered start apart from an admin running `systemctl
@@ -23,6 +23,8 @@
 #   service - so this is opt-in rather than auto-detected: pass
 #   --manual when you deliberately want an ad-hoc run labeled as such,
 #   e.g. `sudo /opt/restic/bin/restic-backup.sh --manual`.
+#   share-path (must match an entry in shares.conf) restricts the run
+#   to just that one share instead of every configured share.
 
 set -uo pipefail
 
@@ -33,14 +35,35 @@ source "${SCRIPT_DIR}/restic-common.sh"
 LOG_FILE="${BACKUP_LOG_FILE:-${LOG_DIR}/backup.log}"
 
 RUN_TAG="${RESTIC_BACKUP_TAG:-scheduled}"
-if [[ "${1:-}" == "--manual" ]]; then
-    RUN_TAG="manual"
-fi
+ONLY_PATH=""
+for arg in "$@"; do
+    case "$arg" in
+        --manual) RUN_TAG="manual" ;;
+        *) ONLY_PATH="${arg%/}" ;;
+    esac
+done
 
 START_TS=$(date +%s)
 log_info "===== restic backup starting (repo: ${RESTIC_REPOSITORY}, run tag: ${RUN_TAG}) ====="
 
 parse_shares_file
+if [[ -n "$ONLY_PATH" ]]; then
+    # Filter down to just the requested share *before* the mount check,
+    # so an unrelated share being unmounted can't block a single-share
+    # run - only the share(s) we're actually about to back up matter.
+    filtered_paths=()
+    filtered_policies=()
+    for i in "${!SHARE_PATHS[@]}"; do
+        if [[ "${SHARE_PATHS[$i]}" == "$ONLY_PATH" ]]; then
+            filtered_paths+=("${SHARE_PATHS[$i]}")
+            filtered_policies+=("${SHARE_POLICIES[$i]}")
+        fi
+    done
+    [[ ${#filtered_paths[@]} -gt 0 ]] || die "no share matching '$ONLY_PATH' found in shares.conf"
+    SHARE_PATHS=("${filtered_paths[@]}")
+    SHARE_POLICIES=("${filtered_policies[@]}")
+fi
+
 if ! check_shares_mounted; then
     log_error "===== restic backup aborted: invalid shares ====="
     notify backup failure "restic backup on $(hostname -f 2>/dev/null || hostname) aborted: one or more configured shares are missing or unmounted. See ${LOG_FILE}."
