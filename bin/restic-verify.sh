@@ -22,14 +22,14 @@
 #        so its exit code is logged but never treated as fatal; its
 #        only job is to kick off the recall.
 #     2. restic restore <snapshot> --target <scratch> --include <file> ...
-#        Plain restore - retried on a poll interval
-#        (RESTIC_VERIFY_POLL_INTERVAL) until it succeeds or the overall
-#        RESTIC_VERIFY_RESTORE_TIMEOUT budget is used up, since there is
-#        no other signal for "the tape has finished mounting/seeking
-#        and the data is now in the gateway's cache" than trying again.
+#        Plain restore - ONE attempt only. If the tape hasn't finished
+#        landing the data yet, this fails and the run is reported as
+#        failed; there is deliberately no internal retry/poll loop
+#        (that would just be a scheduled-looking background wait under
+#        a different name). If it fails, re-run the whole command
+#        yourself later - that's the manual check.
 #   All sampled files for a share are restored in ONE pair of calls
-#   (multiple --include flags), not one pair per file, so there's one
-#   wait for the whole share, not N sequential waits.
+#   (multiple --include flags), not one pair per file.
 #
 # It never restores a whole snapshot - only the sampled files - and
 # the target directory's contents are always removed afterward,
@@ -61,28 +61,7 @@ RESTIC_VERIFY_SAMPLE_FILES="${RESTIC_VERIFY_SAMPLE_FILES:-3}"
 RESTIC_VERIFY_USE_S3_RESTORE="${RESTIC_VERIFY_USE_S3_RESTORE:-true}"
 RESTIC_VERIFY_RESTORE_DAYS="${RESTIC_VERIFY_RESTORE_DAYS:-1}"
 RESTIC_VERIFY_RESTORE_TIMEOUT="${RESTIC_VERIFY_RESTORE_TIMEOUT:-24h}"
-RESTIC_VERIFY_POLL_INTERVAL="${RESTIC_VERIFY_POLL_INTERVAL:-60}"
 RESTIC_VERIFY_ATTEMPT_TIMEOUT="${RESTIC_VERIFY_ATTEMPT_TIMEOUT:-120}"
-
-# restic's -o s3.restore-timeout takes a Go duration string (e.g.
-# "24h", "90m", "1h30m"). We also use it, parsed to seconds, as the
-# overall budget for how long we keep retrying the plain restore step
-# below. Only a handful of "<number><unit>" segments are supported
-# (h/m/s) - that covers every realistic restic duration.
-_duration_to_seconds() {
-    local dur="$1" total=0 num unit
-    while [[ "$dur" =~ ^([0-9]+)(h|m|s)(.*)$ ]]; do
-        num="${BASH_REMATCH[1]}"
-        unit="${BASH_REMATCH[2]}"
-        dur="${BASH_REMATCH[3]}"
-        case "$unit" in
-            h) total=$((total + num * 3600)) ;;
-            m) total=$((total + num * 60)) ;;
-            s) total=$((total + num)) ;;
-        esac
-    done
-    echo "$total"
-}
 
 # --- argument parsing ---------------------------------------------------
 
@@ -112,8 +91,6 @@ if [[ "$RESTIC_VERIFY_USE_S3_RESTORE" == "true" ]]; then
         die "usage: restic-verify.sh --target <path-with-free-space> [share-path] (--target is required in s3-restore mode - see the header comment for why)"
     fi
     [[ -d "$TARGET_DIR" ]] || die "--target directory does not exist: $TARGET_DIR"
-    RESTORE_TIMEOUT_SECONDS=$(_duration_to_seconds "$RESTIC_VERIFY_RESTORE_TIMEOUT")
-    [[ "$RESTORE_TIMEOUT_SECONDS" -gt 0 ]] || die "could not parse RESTIC_VERIFY_RESTORE_TIMEOUT='$RESTIC_VERIFY_RESTORE_TIMEOUT' (expected a Go duration like 24h, 90m, 1h30m)"
 else
     RESTIC_VERIFY_TIMEOUT="${RESTIC_VERIFY_TIMEOUT:-300}"
 fi
@@ -187,27 +164,19 @@ verify_share_via_s3_restore() {
     # the recall still proceeds on the tape gateway's own cache in the
     # background regardless of this process's exit code. Its only job
     # is to have kicked off that recall - never treated as fatal here.
-    log_info "share '$share_name': recall trigger exited $rc (non-zero is normal on this destination - not treated as an error); polling for the data to land"
+    log_info "share '$share_name': recall trigger exited $rc (non-zero is normal on this destination - not treated as an error); attempting the plain restore now (one attempt only)"
 
-    local elapsed=0
-    while [[ $elapsed -lt $RESTORE_TIMEOUT_SECONDS ]]; do
-        timeout "${RESTIC_VERIFY_ATTEMPT_TIMEOUT}" restic restore \
-            "${RESTIC_GLOBAL_ARGS[@]}" "$snapshot_id" \
-            --target "$scratch_dir" \
-            "${include_args[@]}" >>"$LOG_FILE" 2>&1
-        rc=$?
-        if [[ $rc -eq 0 ]]; then
-            log_info "share '$share_name': plain restore succeeded after ~${elapsed}s of waiting"
-            failed=0
-            break
-        fi
-        log_info "share '$share_name': data not ready yet (plain restore exit $rc) - retrying in ${RESTIC_VERIFY_POLL_INTERVAL}s (waited ${elapsed}s/${RESTORE_TIMEOUT_SECONDS}s so far)"
-        sleep "$RESTIC_VERIFY_POLL_INTERVAL"
-        elapsed=$((elapsed + RESTIC_VERIFY_POLL_INTERVAL))
-    done
+    timeout "${RESTIC_VERIFY_ATTEMPT_TIMEOUT}" restic restore \
+        "${RESTIC_GLOBAL_ARGS[@]}" "$snapshot_id" \
+        --target "$scratch_dir" \
+        "${include_args[@]}" >>"$LOG_FILE" 2>&1
+    rc=$?
+    if [[ $rc -eq 0 ]]; then
+        failed=0
+    fi
 
     if [[ $failed -eq 1 ]]; then
-        log_error "share '$share_name': data never became available within ${RESTIC_VERIFY_RESTORE_TIMEOUT} (RESTIC_VERIFY_RESTORE_TIMEOUT) - giving up"
+        log_error "share '$share_name': data not available yet (plain restore exit $rc) - the tape recall may still be in progress; re-run this command yourself in a while to check again"
     else
         for f in "${files[@]}"; do
             local restored="${scratch_dir}${f}"

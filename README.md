@@ -343,15 +343,16 @@ RESTIC_FEATURES=s3-restore restic restore <snapshot> \
     -o s3.enable-restore=1 -o s3.restore-days=<N> -o s3.restore-timeout=<duration> \
     --target <target> --include <file> [--include <file> ...]
 
-# 2. plain restore - retried on a poll interval until it succeeds
-#    (the data has landed) or the time budget runs out, since there's
-#    no other signal for "is it ready yet" than trying again
+# 2. plain restore - ONE attempt only. If the tape hasn't finished
+#    landing the data yet, this fails and the run is reported as
+#    failed - there is deliberately no internal retry/poll loop (that
+#    would just be a schedule under a different name). Re-run the
+#    whole command yourself later to check again.
 restic restore <snapshot> --target <target> --include <file> ...
 ```
 
 All sampled files for a share are restored in **one** such pair of
-calls (multiple `--include` flags), not one pair per file, so there's
-one recall + poll loop per share, not N sequential ones. Restored
+calls (multiple `--include` flags), not one pair per file. Restored
 files land under `--target` just long enough to confirm each landed
 with non-zero size, then that sample is deleted again - on every code
 path, success or failure (only this run's own restored files are
@@ -367,14 +368,13 @@ have enough room for this on this host, so don't point it there.
 Tune:
 - `RESTIC_VERIFY_RESTORE_DAYS` - how long the thawed copy stays warm
   on the Glacier side.
-- `RESTIC_VERIFY_RESTORE_TIMEOUT` - total time budget for the poll
-  loop (a Go duration like `24h`, `90m`, `1h30m`), matched to how long
-  a real recall actually takes on your tape robot.
-- `RESTIC_VERIFY_POLL_INTERVAL` - seconds between poll attempts
-  (default 60).
+- `RESTIC_VERIFY_RESTORE_TIMEOUT` - passed as-is to restic's own
+  `-o s3.restore-timeout` on the trigger call (a Go duration like
+  `24h`, `90m`, `1h30m`). It doesn't control anything on our side -
+  there's no retry loop here to bound.
 - `RESTIC_VERIFY_ATTEMPT_TIMEOUT` - max seconds any single restic call
-  (the trigger, or one poll attempt) may run before being killed
-  (default 120), independent of the overall budget above.
+  (the trigger, or the one plain-restore attempt) may run before being
+  killed (default 120).
 
 If your destination instead serves reads transparently (no restore
 step needed), set `RESTIC_VERIFY_USE_S3_RESTORE=false` to fall back to

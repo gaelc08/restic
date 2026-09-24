@@ -114,12 +114,14 @@ RESTIC_FEATURES=s3-restore restic -r "$RESTIC_REPOSITORY" restore <snapshot-id> 
     -o s3.enable-restore=1 -o s3.restore-days=1 -o s3.restore-timeout=24h \
     --target <restore-path>
 
-# 2. plain restore - retry this periodically until it succeeds. There
-#    is no reliable external signal for "the tape has finished
+# 2. plain restore - retry this yourself, by hand, until it succeeds.
+#    There is no reliable external signal for "the tape has finished
 #    mounting/seeking and the data is now cached" other than trying
-#    again; restic-verify.sh does this as a poll loop
-#    (RESTIC_VERIFY_POLL_INTERVAL) bounded by an overall time budget
-#    (RESTIC_VERIFY_RESTORE_TIMEOUT).
+#    again. restic-verify.sh deliberately does NOT automate this
+#    retrying - it makes one attempt and tells you to re-run it
+#    yourself later, since a script that sleeps and retries on its own
+#    for potentially hours is really just a schedule under a different
+#    name, and unattended scheduling here was ruled out entirely.
 restic -r "$RESTIC_REPOSITORY" restore <snapshot-id> --target <restore-path>
 ```
 
