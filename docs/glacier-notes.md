@@ -80,39 +80,70 @@ automation ships with option 1 configured (per the stated requirement)
 but the switch is a one-line change to `restic.env` plus a bucket
 lifecycle rule.
 
+**Confirmed for this repo's destination**: option 1 already works fine
+in practice - daily `backup`, `forget`, `prune`, and metadata-only
+`check` have all been running successfully without needing a restore,
+so `config`/`keys/`/`index/`/`snapshots/` are evidently readable
+without delay. It's specifically reading pack data under `data/`
+(actual file content) that requires the explicit restore step covered
+below.
+
 ## Restoring from Glacier
 
 `restic restore`, `restic dump`, and `restic check --read-data` all
-need to read pack data. If that data is in a Glacier storage class
-that requires restoration, you must first trigger and wait for the S3
-restore (e.g. `aws s3api restore-object`) for the relevant objects
-before running those restic commands - restic itself does not
-initiate or wait for Glacier restores. The daily jobs in this repo
+need to read pack data. **Confirmed against this repo's real
+destination (`scrat-1.ctie.etat.lu`): reads need an explicit restore
+step first**, same as true AWS Glacier. The daily jobs in this repo
 (per-share `backup`, per-share `forget`, the single `prune
---max-repack-size 0`, and the metadata-only `check`) never need to do
-this, which is why they can safely run automatically every day even
-against a Glacier/tape-backed repository.
+--max-repack-size 0`, and the metadata-only `check`) never need to
+read pack data, which is why they can keep running automatically every
+day regardless.
 
-`restic-verify.sh` (`resticctl verify`) is the one job here that does
-need to read real data - it samples a few files per share and reads
-them back with `restic dump` to prove backups are actually restorable.
-Whether that "just works" or needs an explicit restore-object step
-first depends entirely on your specific destination:
+Restic itself *can* drive the Glacier restore workflow, via an
+experimental feature flag - this is the mechanism `restic-verify.sh`
+uses by default (`RESTIC_VERIFY_USE_S3_RESTORE=true`), and it's also
+**the procedure to use for a real disaster-recovery restore** from
+this repository, not just for verification:
 
-- **True AWS Glacier / Glacier Deep Archive**: reads will fail (or
-  hang) until you explicitly restore the object first. `restic-verify.sh`
-  bounds each file's read with `RESTIC_VERIFY_TIMEOUT` so it fails
-  cleanly and reports it rather than hanging forever, but it cannot
-  usefully run unattended against this kind of destination without
-  extra automation (e.g. a wrapper that issues `aws s3api
-  restore-object` for the relevant keys and waits before running
-  `restic-verify.sh`) - not something this toolkit does for you today.
-- **AWS Glacier Instant Retrieval, or most on-prem S3-compatible
-  gateways backed by tape**: typically serve reads directly, with
-  some added latency, and no explicit restore step - `restic-verify.sh`
-  works as-is here.
+```sh
+# 1. trigger the S3 restore for whatever objects this snapshot/path
+#    needs, and wait (up to -o s3.restore-timeout) for them to thaw
+RESTIC_FEATURES=s3-restore restic -r "$RESTIC_REPOSITORY" restore <snapshot-id> \
+    -o s3.enable-restore=1 -o s3.restore-days=1 -o s3.restore-timeout=24h \
+    --target <restore-path>
 
-This is exactly why `restic-verify.timer` is installed but never
-auto-enabled: run `resticctl verify` manually first and see which of
-the above actually describes your setup before deciding whether (and
-how often) to schedule it.
+# 2. plain restore, now that the objects are warm
+restic -r "$RESTIC_REPOSITORY" restore <snapshot-id> --target <restore-path>
+```
+
+Notes:
+
+- `RESTIC_FEATURES=s3-restore` only needs to be set for the first
+  command - it's an experimental-feature opt-in for the `-o
+  s3.enable-restore=...` options, which the second (plain) restore
+  doesn't use.
+- `-o s3.restore-days` controls how many days the thawed copy stays
+  available before reverting to archive; `-o s3.restore-timeout` is
+  how long restic itself will wait for objects to thaw (a Go duration
+  like `24h`, `90m`) before giving up - tune both to your tape robot's
+  actual behavior and how much time you can give a real restore.
+- restic figures out which pack objects a given restore actually needs
+  and restores those - you don't need to work out S3 keys by hand, and
+  you can restrict scope with the usual `--include`/`--path` filters
+  to restore (and therefore only need to thaw) a subset of a snapshot.
+- Add `--target` under a scratch/DR location, not back onto the live
+  share, until you've confirmed the restored content is what you
+  expect.
+
+For destinations that serve reads transparently instead (no restore
+step needed - true of AWS Glacier Instant Retrieval and many on-prem
+S3-compatible tape gateways), skip all of the above: a plain `restic
+restore` or `restic dump` just works. Set
+`RESTIC_VERIFY_USE_S3_RESTORE=false` in that case so `restic-verify.sh`
+uses the cheaper direct-read path instead.
+
+This is also why `restic-verify.timer` is installed but never
+auto-enabled by `install.sh`: even with the restore mechanism working,
+a real restore against a tape-backed destination can take anywhere
+from minutes to many hours, so it needs a deliberate decision about
+scheduling rather than a default-on timer.

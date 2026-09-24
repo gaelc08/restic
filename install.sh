@@ -62,17 +62,18 @@ VERSIONEOF
 echo "    wrote $VERSION_FILE:"
 sed 's/^/    /' "$VERSION_FILE"
 
-echo "==> Creating cache/tmp directories"
+echo "==> Creating cache/tmp/verify-scratch directories"
 # These must exist on disk *before* the systemd services ever start:
-# ReadWritePaths= in restic-backup.service / restic-maintenance.service
-# bind-mounts them into the service's private mount namespace before
-# ExecStart runs, and unlike the script's own `mkdir -p` (which only
-# runs after that), systemd will not create them for you - it fails
-# with "226/NAMESPACE" instead. If you change RESTIC_CACHE_DIR or
-# RESTIC_TMP_DIR in restic.env away from these defaults, update
-# ReadWritePaths= in both unit files to match and create the new
-# directories the same way.
-mkdir -p /opt/restic/restic-cache /opt/restic/restic-tmp
+# ReadWritePaths= in restic-backup.service / restic-maintenance.service /
+# restic-verify.service bind-mounts them into the service's private
+# mount namespace before ExecStart runs, and unlike the script's own
+# `mkdir -p` (which only runs after that), systemd will not create
+# them for you - it fails with "226/NAMESPACE" instead. If you change
+# RESTIC_CACHE_DIR, RESTIC_TMP_DIR, or RESTIC_VERIFY_SCRATCH_DIR in
+# restic.env away from these defaults, update ReadWritePaths= in the
+# relevant unit file(s) to match and create the new directories the
+# same way.
+mkdir -p /opt/restic/restic-cache /opt/restic/restic-tmp /opt/restic/restic-verify-scratch
 
 echo "==> Installing config to /etc/restic (existing files left untouched)"
 mkdir -p /etc/restic

@@ -320,30 +320,61 @@ the dry-run output and the snapshot IDs before confirming.
 `restic check` (run as part of daily maintenance) only validates
 repository metadata - it never proves a file can actually be read back
 out. `restic-verify.sh` / `resticctl verify` closes that gap: for each
-configured share, it takes the latest snapshot, samples a handful of
-files (`RESTIC_VERIFY_SAMPLE_FILES`, default 3), and streams each one
-back with `restic dump` under a timeout (`RESTIC_VERIFY_TIMEOUT`,
-default 300s) - the same data-read path a real `restic restore` would
-use, without pulling down a whole snapshot's worth of data every run.
+configured share, it takes the latest snapshot and samples a handful
+of files (`RESTIC_VERIFY_SAMPLE_FILES`, default 3).
 
 ```sh
 resticctl verify                        # every configured share
 resticctl verify /mnt/share-finance     # just one share
 ```
 
-**Read this before scheduling it.** This repository's data lives
-behind S3 Glacier/tape (see `docs/glacier-notes.md`). Whether a sampled
-file comes back immediately or needs an explicit restore/thaw step
-first depends entirely on your specific destination - true AWS Glacier
-and Deep Archive require an explicit restore before the object is
-readable; many on-prem S3-compatible gateways serve reads transparently
-instead. If yours needs that explicit step, every file here will just
-time out (and correctly report a failure - that's the useful signal,
-not a bug) rather than actually verifying anything. **Run `resticctl
-verify` manually first** and see what actually happens against your
-real repository before enabling `restic-verify.timer`
-(`systemctl enable --now restic-verify.timer`) - `install.sh` installs
-the unit but deliberately does not enable it.
+**Confirmed against this repo's real destination
+(`scrat-1.ctie.etat.lu`): reads need an explicit S3 Glacier restore
+step first**, same as true AWS Glacier - a plain read just times out
+otherwise (which is exactly what the first test run correctly caught).
+`RESTIC_VERIFY_USE_S3_RESTORE` defaults to `true` accordingly, which
+makes `restic-verify.sh` run restic's own two-step Glacier-restore
+sequence for the sampled files:
+
+```sh
+# 1. trigger the restore and wait for the objects to thaw
+RESTIC_FEATURES=s3-restore restic restore <snapshot> \
+    -o s3.enable-restore=1 -o s3.restore-days=<N> -o s3.restore-timeout=<duration> \
+    --target <scratch> --include <file> [--include <file> ...]
+
+# 2. plain restore, now that the objects are warm
+restic restore <snapshot> --target <scratch> --include <file> ...
+```
+
+All sampled files for a share are restored in **one** such pair of
+calls (multiple `--include` flags), not one pair per file, so there's
+one wait per share, not N sequential ones. Restored files land in
+`RESTIC_VERIFY_SCRATCH_DIR` (default `/opt/restic/restic-verify-scratch`)
+just long enough to confirm each landed with non-zero size, then the
+scratch directory is deleted - on every code path, success or failure.
+
+Tune `RESTIC_VERIFY_RESTORE_DAYS` (how long the thawed copy stays warm
+on the Glacier side) and `RESTIC_VERIFY_RESTORE_TIMEOUT` (how long
+restic itself waits for objects to thaw - a Go duration like `24h`,
+`90m`, `1h30m`) to match how long your tape robot actually takes.
+`restic-verify.sh` also wraps the whole sequence in its own outer
+`timeout` (that value plus a 10-minute buffer) as a safety net in case
+restic's own wait doesn't trigger correctly.
+
+If your destination instead serves reads transparently (no restore
+step needed), set `RESTIC_VERIFY_USE_S3_RESTORE=false` to fall back to
+the older, cheaper approach: streaming each sampled file straight back
+with `restic dump` under `RESTIC_VERIFY_TIMEOUT` (default 300s).
+
+**Even with the restore step working, think before scheduling
+`restic-verify.timer`.** A real Glacier/tape restore can take anywhere
+from minutes to many hours depending on the robot - `resticctl verify`
+is not a quick job here. `install.sh` installs the timer but
+deliberately does not enable it
+(`systemctl enable --now restic-verify.timer` when you're ready); a
+weekly cadence with a generous window (the shipped timer runs Sunday
+02:00) is a reasonable starting point, but confirm a manual run's
+actual duration first so it doesn't collide with anything else.
 
 A share with zero snapshots is reported as a failure too (nothing to
 verify means something's wrong, not nothing to do), and an empty
