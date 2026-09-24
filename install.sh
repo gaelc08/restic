@@ -130,10 +130,10 @@ Then enable the daily timers:
     systemctl enable --now restic-backup.timer
     systemctl enable --now restic-maintenance.timer
 
-The daily email report (backup/maintenance/verify status + a
-per-share snapshot summary) only reads local status files and fast
-metadata, so it's safe to schedule too - enable it once
-RESTIC_NOTIFY_EMAIL and/or RESTIC_REPORT_EMAIL is set in restic.env:
+The daily email report (latest snapshot per configured share) only
+reads fast repository metadata, so it's safe to schedule too - enable
+it once RESTIC_NOTIFY_EMAIL and/or RESTIC_REPORT_EMAIL is set in
+restic.env:
     systemctl enable --now restic-report.timer
 
 Restore verification (resticctl verify) has NO timer and is never

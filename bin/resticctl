@@ -63,13 +63,12 @@ Commands:
                                   this, on purpose. See restic-verify.sh's
                                   header comment and docs/glacier-notes.md.
 
-  report                          Email a daily digest (last backup/
-                                  maintenance/verify status + a
-                                  per-share snapshot summary) to
+  report                          Email a daily table of the latest
+                                  snapshot per configured share to
                                   RESTIC_REPORT_EMAIL (or
-                                  RESTIC_NOTIFY_EMAIL). Only reads
-                                  local status files and fast metadata -
-                                  safe to schedule daily.
+                                  RESTIC_NOTIFY_EMAIL). Only reads fast
+                                  repository metadata - safe to
+                                  schedule daily.
 
   version                        Show the deployed commit (VERSION file).
 

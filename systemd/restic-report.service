@@ -25,10 +25,10 @@ SyslogIdentifier=restic-report
 # or RESTIC_TMP_DIR in restic.env, update this list and mkdir the new
 # paths to match.
 #
-# This service only reads local status files and fast repository
-# metadata (restic snapshots) - never archived pack data - so unlike
-# restic-verify.sh it does not take the backup/maintenance lock and is
-# safe to run on a daily schedule.
+# This service only reads fast repository metadata (restic snapshots)
+# - never archived pack data - so unlike restic-verify.sh it does not
+# take the backup/maintenance lock and is safe to run on a daily
+# schedule.
 NoNewPrivileges=true
 ProtectSystem=full
 ReadWritePaths=/opt/restic/restic-cache /opt/restic/restic-tmp /var/log/restic

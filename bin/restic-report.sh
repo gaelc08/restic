@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Daily status digest: last backup/maintenance/verify outcomes, plus a
-# per-share snapshot summary, emailed as one plain-text report.
+# Daily backup report: one plain-text table with the latest snapshot
+# of every configured share, emailed out.
 #
-# Unlike restic-verify.sh, this only reads local status files
-# (RESTIC_STATUS_DIR) and fast repository metadata (`restic
-# snapshots`) - it never touches archived pack data, so it's safe to
+# This is a backup report, not a server-health digest - it does not
+# cover backup/maintenance/verify job status (that's what the
+# RESTIC_NOTIFY_* failure alerts and RESTIC_STATUS_DIR status files
+# are for; see README.md). It only reads fast repository metadata
+# (`restic snapshots`) - never archived pack data - so it's safe to
 # run on a daily schedule (see systemd/restic-report.timer).
 #
 # Recipient: RESTIC_REPORT_EMAIL, falling back to RESTIC_NOTIFY_EMAIL
@@ -25,24 +27,6 @@ log_info "===== restic daily report starting ====="
 host="$(hostname -f 2>/dev/null || hostname)"
 today="$(date '+%Y-%m-%d %H:%M %Z')"
 
-# read_status <job> - human-readable summary of a job's last recorded
-# run, or a clear "nothing recorded" line if the status file is
-# missing (e.g. verify has never been run manually yet).
-read_status() {
-    local job="$1"
-    local file="${RESTIC_STATUS_DIR}/${job}.status"
-    if [[ ! -r "$file" ]]; then
-        echo "  No run recorded."
-        return
-    fi
-    local status timestamp summary
-    status="$(grep '^STATUS=' "$file" | cut -d= -f2-)"
-    timestamp="$(grep '^TIMESTAMP=' "$file" | cut -d= -f2-)"
-    summary="$(grep '^SUMMARY=' "$file" | cut -d= -f2-)"
-    echo "  Status: ${status:-unknown}  (${timestamp:-unknown time})"
-    echo "  ${summary}"
-}
-
 # build_shares_table - one flat, aligned table with the latest snapshot
 # of each configured share, in restic's native ungrouped format (ID,
 # Time, Host, Tags, Paths, Size columns). --group-by can't give us this
@@ -54,6 +38,13 @@ read_status() {
 # Runs in a subshell via the caller's $(...): if parse_shares_file hits
 # a config error it calls die() (log + exit 1), which only unwinds this
 # subshell, so a bad shares.conf can't take down the whole report.
+#
+# restic's own table has a header, a footer ("N snapshots", "Timestamps
+# shown in ...") and (on newer restic) separator rules around the rows -
+# fine on a terminal, ugly in a plain-text email. We keep restic's own
+# column alignment (safest: it's restic's own renderer, not a
+# reimplementation) but grep down to just the header line and the data
+# rows, each of which starts with an 8-hex-digit short ID.
 build_shares_table() {
     if ! command -v jq >/dev/null 2>&1; then
         echo "  jq is not installed - cannot build the per-share snapshot table."
@@ -74,7 +65,8 @@ build_shares_table() {
         return
     fi
 
-    restic snapshots "${RESTIC_GLOBAL_ARGS[@]}" "${ids[@]}" 2>>"$LOG_FILE"
+    restic snapshots "${RESTIC_GLOBAL_ARGS[@]}" "${ids[@]}" 2>>"$LOG_FILE" \
+        | grep -E '^(ID[[:space:]]|[0-9a-f]{8}[[:space:]])'
 }
 
 SHARES_TABLE="$(build_shares_table)"
@@ -83,16 +75,8 @@ SHARES_TABLE="$(build_shares_table)"
 BODY="$(cat <<REPORTEOF
 Daily restic report - ${host} - ${today}
 
-=== Backup ===
-$(read_status backup)
+Latest snapshot per share:
 
-=== Maintenance ===
-$(read_status maintenance)
-
-=== Restore verification (manual, on-demand - not scheduled automatically) ===
-$(read_status verify)
-
-=== Shares (latest snapshot per share) ===
 ${SHARES_TABLE}
 
 --
