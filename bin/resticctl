@@ -7,6 +7,7 @@
 #
 # Usage:
 #   resticctl backup [--manual] [share-name-or-path]
+#   resticctl backup --background <share-name-or-path>
 #   resticctl backup-all
 #   resticctl maintenance
 #   resticctl list [restic snapshots flags...]
@@ -33,17 +34,32 @@ Usage: resticctl <command> [args...]
 Commands:
   backup [--manual] [share-name-or-path]
                                   Run a backup of all configured shares
-                                  sequentially in this one process, or
+                                  sequentially IN THIS ONE PROCESS, or
                                   just one (by its share name, e.g.
                                   "finance", or its full shares.conf
-                                  path). --manual tags the run "manual"
-                                  instead of the configured
-                                  RESTIC_BACKUP_TAG. The scheduled path
-                                  is restic-backup.timer -> backup-all
-                                  below, one restic-backup@<share>.service
-                                  instance per share, running in
-                                  parallel; this subcommand is for an
-                                  ad-hoc run from this one process.
+                                  path) - in the foreground, blocking
+                                  until done. --manual tags the run
+                                  "manual" instead of the configured
+                                  RESTIC_BACKUP_TAG. Ctrl+C here kills
+                                  the backup for real (it's a direct
+                                  child of this command, not a systemd
+                                  job) - use this for watching a run
+                                  live or debugging, not for "start it
+                                  and walk away".
+
+  backup --background <share-name-or-path>
+                                  Start just that one share's backup in
+                                  the background and return immediately:
+                                  `systemctl start --no-block
+                                  restic-backup@<share>.service`. Safe
+                                  to Ctrl+C or disconnect afterward -
+                                  the job belongs to systemd, not this
+                                  command. Always tags the run
+                                  "scheduled" (the same share-tagged
+                                  restic-backup@.service template the
+                                  daily dispatcher uses) - can't be
+                                  combined with --manual. For every
+                                  share at once, see backup-all below.
 
   backup-all                     Start every configured share's backup
                                   right now, in parallel, without
@@ -118,7 +134,31 @@ shift || true
 
 case "$cmd" in
     backup)
-        exec "${SCRIPT_DIR}/restic-backup.sh" "$@"
+        background=0
+        args=()
+        for arg in "$@"; do
+            if [[ "$arg" == "--background" ]]; then
+                background=1
+            else
+                args+=("$arg")
+            fi
+        done
+        if [[ $background -eq 1 ]]; then
+            for arg in "${args[@]}"; do
+                if [[ "$arg" == "--manual" ]]; then
+                    echo "resticctl backup --background cannot be combined with --manual: it starts restic-backup@<share>.service via systemd, which always tags the run \"scheduled\" (the service's ExecStart has no way to pass --manual through). Drop --background to run --manual in the foreground instead." >&2
+                    exit 2
+                fi
+            done
+            if [[ ${#args[@]} -ne 1 ]]; then
+                echo "resticctl backup --background requires exactly one share name or path" >&2
+                exit 2
+            fi
+            share_name="$(basename "${args[0]%/}")"
+            echo "starting restic-backup@${share_name}.service in the background"
+            exec systemctl start --no-block "restic-backup@${share_name}.service"
+        fi
+        exec "${SCRIPT_DIR}/restic-backup.sh" "${args[@]}"
         ;;
     backup-all)
         exec "${SCRIPT_DIR}/restic-backup-dispatch.sh" "$@"

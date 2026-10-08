@@ -660,6 +660,23 @@ resticctl backup /mnt/share-finance
 resticctl backup --manual /mnt/share-finance
 ```
 
+**These run in the foreground, in this one process** - useful for
+watching the run live, but it blocks your shell until it's done, and
+Ctrl+C kills it for real (it's a direct child of this command, not a
+systemd job - unlike `systemctl start`/`backup-all` above, where
+Ctrl+C only stops you from *watching*, never the job itself). To
+start just one share in the background instead, going through systemd
+the same way `backup-all` does:
+
+```sh
+resticctl backup --background /mnt/share-finance
+```
+
+which is a shorthand for `systemctl start --no-block
+restic-backup@finance.service` - always tags the run `scheduled`
+(can't be combined with `--manual`, since that service's `ExecStart`
+has no way to pass it through).
+
 An unrelated share being missing or unmounted never blocks a
 single-share run - only the requested share's mount status is checked.
 
