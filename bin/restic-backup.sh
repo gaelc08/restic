@@ -1,30 +1,49 @@
 #!/usr/bin/env bash
-# Run a restic backup of all configured mounted shares against the
-# S3 (Glacier) repository. Intended to be run by restic-backup.service
-# (see systemd/restic-backup.service / .timer).
+# Run a restic backup of one or all configured mounted shares against
+# the S3 (Glacier) repository. Each share is backed up as its own
+# `restic backup <path>` call, i.e. its own snapshot, tagged with the
+# share's name and retention policy. This is required so
+# restic-maintenance.sh can apply a different retention policy per
+# share (restic forget/prune act on whole snapshots, not on sub-paths
+# within one) - see restic-common.sh.
 #
-# Each share is backed up as its own `restic backup <path>` call, i.e.
-# its own snapshot, tagged with the share's name and retention policy.
-# This is required so restic-maintenance.sh can apply a different
-# retention policy per share (restic forget/prune act on whole
-# snapshots, not on sub-paths within one) - see restic-common.sh.
+# Intended to be run per share, in parallel, by one instance of the
+# restic-backup@.service template unit per configured share (see
+# systemd/restic-backup@.service / .timer) - NOT by one single service
+# looping over every share sequentially. restic itself supports
+# multiple concurrent `backup` runs against the same repository (see
+# acquire_lock in restic-common.sh), so this is a real fix for a real
+# failure mode: with one sequential service, a single share that takes
+# longer than a day (first upload of a large share, a slow link) would
+# leave the whole job still running at the next day's scheduled start,
+# and - since systemd won't start a second instance of a unit that's
+# still active - silently skip that entire day's backup for every
+# other share too, not just the slow one. One unit instance per share
+# means a slow share only ever blocks its own next run, never anyone
+# else's.
 #
-# Exit codes: 0 if every share backed up cleanly, 3 if every share
-# succeeded but at least one completed with restic's own "some source
-# files could not be read" warning (its exit code 3), 1 if any share
-# failed outright. See
+# Exit codes: 0 if every requested share backed up cleanly, 3 if every
+# share succeeded but at least one completed with restic's own "some
+# source files could not be read" warning (its exit code 3), 1 if any
+# share failed outright. See
 # https://restic.readthedocs.io/en/latest/040_backup.html#exit-status-codes
 #
-# Usage: restic-backup.sh [--manual] [share-path]
+# Usage: restic-backup.sh [--manual] [share-name-or-path]
 #   --manual tags the run "manual" instead of RESTIC_BACKUP_TAG
 #   ("scheduled" by default). Systemd gives no reliable way to tell a
 #   timer-triggered start apart from an admin running `systemctl
-#   start restic-backup.service` - both look identical from inside the
-#   service - so this is opt-in rather than auto-detected: pass
-#   --manual when you deliberately want an ad-hoc run labeled as such,
-#   e.g. `sudo /opt/restic/bin/restic-backup.sh --manual`.
-#   share-path (must match an entry in shares.conf) restricts the run
-#   to just that one share instead of every configured share.
+#   start restic-backup@<share>.service` - both look identical from
+#   inside the service - so this is opt-in rather than auto-detected:
+#   pass --manual when you deliberately want an ad-hoc run labeled as
+#   such, e.g. `sudo /opt/restic/bin/restic-backup.sh --manual`.
+#   share-name-or-path restricts the run to just that one share instead
+#   of every configured share - either its full path from shares.conf,
+#   or just its share name (the path's basename, e.g. "finance" for
+#   /mnt/share-finance) - this is what restic-backup@.service passes
+#   as %i, since systemd instance names can't contain "/". Omit it to
+#   back up every configured share sequentially in one process (handy
+#   for an ad-hoc full run; the parallel path is one instance per share,
+#   not this).
 
 set -uo pipefail
 
@@ -59,7 +78,22 @@ if [[ -n "$ONLY_PATH" ]]; then
             filtered_policies+=("${SHARE_POLICIES[$i]}")
         fi
     done
-    [[ ${#filtered_paths[@]} -gt 0 ]] || die "no share matching '$ONLY_PATH' found in shares.conf"
+    if [[ ${#filtered_paths[@]} -eq 0 ]]; then
+        # No exact path matched - try matching by share name (the
+        # path's basename) instead, since that's all a systemd
+        # instance name can carry (no "/").
+        for i in "${!SHARE_PATHS[@]}"; do
+            if [[ "$(basename "${SHARE_PATHS[$i]}")" == "$ONLY_PATH" ]]; then
+                filtered_paths+=("${SHARE_PATHS[$i]}")
+                filtered_policies+=("${SHARE_POLICIES[$i]}")
+            fi
+        done
+    fi
+    if [[ ${#filtered_paths[@]} -eq 0 ]]; then
+        die "no share matching '$ONLY_PATH' found in shares.conf (checked full paths and share names)"
+    elif [[ ${#filtered_paths[@]} -gt 1 ]]; then
+        die "share name '$ONLY_PATH' matches more than one entry in shares.conf (${filtered_paths[*]}) - use the full path instead"
+    fi
     SHARE_PATHS=("${filtered_paths[@]}")
     SHARE_POLICIES=("${filtered_policies[@]}")
 fi
@@ -72,7 +106,7 @@ fi
 log_info "shares: ${VALID_SHARE_PATHS[*]}"
 
 RESTIC_BACKUP_LOCK_TIMEOUT="${RESTIC_BACKUP_LOCK_TIMEOUT:-300}"
-if ! acquire_lock "$RESTIC_BACKUP_LOCK_TIMEOUT"; then
+if ! acquire_lock "$RESTIC_BACKUP_LOCK_TIMEOUT" shared; then
     log_error "===== restic backup aborted: could not acquire lock $RESTIC_LOCK_FILE within ${RESTIC_BACKUP_LOCK_TIMEOUT}s (maintenance running?) ====="
     notify backup failure "restic backup on $(hostname -f 2>/dev/null || hostname) aborted: could not acquire the repository lock within ${RESTIC_BACKUP_LOCK_TIMEOUT}s (maintenance stuck?). See ${LOG_FILE}."
     exit 1

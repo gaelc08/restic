@@ -4,8 +4,14 @@
 # optional metadata-only check.
 #
 # Intended to run daily via restic-maintenance.service / .timer, after
-# restic-backup.sh - though the two can never actually run at the same
-# time, see acquire_lock() in restic-common.sh.
+# every restic-backup@<share>.service instance has had a chance to
+# finish. This takes the lock in exclusive mode (see acquire_lock() in
+# restic-common.sh), so it can never actually run at the same time as
+# any of them - if one or more backups are still running (each holding
+# the lock in shared mode) when this fires, acquire_lock's 0-second
+# timeout means it doesn't wait around for them: it skips this run
+# entirely rather than risk pruning while a backup is still writing
+# pack files, and tries again at the next scheduled time.
 #
 # Retention is per share: SHARES_FILE names a retention policy per
 # share, RETENTION_POLICIES_FILE defines each policy's keep-daily/
@@ -56,7 +62,7 @@ LOG_FILE="${MAINTENANCE_LOG_FILE:-${LOG_DIR}/maintenance.log}"
 START_TS=$(date +%s)
 log_info "===== restic maintenance starting (repo: ${RESTIC_REPOSITORY}) ====="
 
-if ! acquire_lock 0; then
+if ! acquire_lock 0 exclusive; then
     log_warn "could not acquire lock $RESTIC_LOCK_FILE (a backup is still running); skipping this maintenance run, will retry at the next scheduled time"
     log_info "===== restic maintenance skipped ====="
     notify maintenance skipped "restic maintenance on $(hostname -f 2>/dev/null || hostname) skipped: a backup was still running. Will retry at the next scheduled time."
