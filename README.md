@@ -599,6 +599,21 @@ sudo systemctl start restic-backup@<share-name>.service   # one share, e.g. "fin
 sudo systemctl start restic-maintenance.service
 ```
 
+`systemctl start` on these oneshot services is fire-and-forget: it
+hands the job to systemd and returns immediately, so the backup keeps
+running after your shell/SSH session exits - you don't need `nohup`,
+`screen`, or `tmux` for this. To do that for *every* configured share
+at once (started in parallel, not waiting on each other):
+
+```sh
+resticctl backup-all
+```
+
+which is just a loop of `systemctl start restic-backup@<share>.service`
+over every entry in `shares.conf` - check progress afterward with
+`resticctl status`, `systemctl status 'restic-backup@*.service'`, or
+`journalctl -u 'restic-backup@*.service' -f`.
+
 Snapshots created this way still get the `RESTIC_BACKUP_TAG` value
 (`"scheduled"` by default) - systemd has no way to tell "the timer
 fired this" apart from "an admin ran `systemctl start`", so the tag
