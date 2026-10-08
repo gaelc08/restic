@@ -7,6 +7,7 @@
 #
 # Usage:
 #   resticctl backup [--manual] [share-name-or-path]
+#   resticctl backup-all
 #   resticctl maintenance
 #   resticctl enable-backups
 #   resticctl list [restic snapshots flags...]
@@ -43,6 +44,20 @@ Commands:
                                   instance per share running in
                                   parallel - see enable-backups below;
                                   this subcommand is for an ad-hoc run.
+
+  backup-all                     Start every configured share's backup
+                                  right now, in parallel, without
+                                  waiting for any of them: one
+                                  `systemctl start
+                                  restic-backup@<share>.service` per
+                                  share in shares.conf. Each keeps
+                                  running under systemd after this
+                                  command (and your session) exits -
+                                  check progress with `resticctl
+                                  status`, `systemctl status
+                                  'restic-backup@*.service'`, or
+                                  `journalctl -u
+                                  'restic-backup@*.service' -f`.
 
   enable-backups                 Enable (and start) one
                                   restic-backup@<share>.timer instance
@@ -107,6 +122,32 @@ shift || true
 case "$cmd" in
     backup)
         exec "${SCRIPT_DIR}/restic-backup.sh" "$@"
+        ;;
+    backup-all)
+        # Fire-and-forget: `systemctl start` on a oneshot service just
+        # hands the job to systemd and returns immediately - it does not
+        # wait for the backup to finish - so this loop completes in a
+        # couple seconds and every share then backs up in parallel,
+        # independently of this command or your session.
+        env_file="${RESTIC_ENV_FILE:-/etc/restic/restic.env}"
+        if [[ ! -r "$env_file" ]]; then
+            echo "cannot read $env_file" >&2
+            exit 1
+        fi
+        shares_file="$(
+            # shellcheck disable=SC1090
+            source "$env_file" >/dev/null 2>&1
+            echo "${SHARES_FILE:-/etc/restic/shares.conf}"
+        )"
+        if [[ ! -r "$shares_file" ]]; then
+            echo "cannot read SHARES_FILE: $shares_file" >&2
+            exit 1
+        fi
+        while read -r path; do
+            name="$(basename "$path")"
+            echo "starting restic-backup@${name}.service"
+            systemctl start "restic-backup@${name}.service"
+        done < <(awk '!/^#/ && NF {print $1}' "$shares_file")
         ;;
     maintenance)
         exec "${SCRIPT_DIR}/restic-maintenance.sh" "$@"
