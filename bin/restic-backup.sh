@@ -8,9 +8,11 @@
 # within one) - see restic-common.sh.
 #
 # Intended to be run per share, in parallel, by one instance of the
-# restic-backup@.service template unit per configured share (see
-# systemd/restic-backup@.service / .timer) - NOT by one single service
-# looping over every share sequentially. restic itself supports
+# restic-backup@.service template unit per configured share - started
+# by restic-backup-dispatch.sh (restic-backup.service/.timer), which
+# fires daily and starts one instance per share currently in
+# shares.conf - NOT by one single service looping over every share
+# sequentially. restic itself supports
 # multiple concurrent `backup` runs against the same repository (see
 # acquire_lock in restic-common.sh), so this is a real fix for a real
 # failure mode: with one sequential service, a single share that takes

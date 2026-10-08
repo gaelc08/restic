@@ -44,21 +44,34 @@ underlying scripts directly, not through `resticctl`).
 
 ## How it fits together
 
-- **`restic-backup@.timer` is a template unit - one instance per
-  share**, e.g. `restic-backup@finance.timer`, enabled via `resticctl
-  enable-backups` (see Install below). Each instance fires daily at
-  01:00 (+ up to 10 min random delay, picked independently per
-  instance) and runs `/opt/restic/bin/restic-backup.sh <share-name>`,
-  which backs up just that one share as **its own `restic backup`
-  call** - one snapshot per share, per run - so each can carry its own
+- **`restic-backup.timer` fires `restic-backup.service` once daily at
+  01:00** (+ up to 10 min random delay) - but that service is just a
+  thin *dispatcher* (`bin/restic-backup-dispatch.sh`): it reads
+  `shares.conf` fresh every time it runs and, for each share, starts
+  `restic-backup@<share>.service` - **a template unit, one instance
+  per share** (e.g. `restic-backup@finance.service`) - with
+  `systemctl start --no-block`, then exits within seconds. Each of
+  those instances runs `/opt/restic/bin/restic-backup.sh <share-name>`,
+  backing up just that one share as **its own `restic backup` call** -
+  one snapshot per share, per run - so each can carry its own
   retention policy, *and* so N shares back up in parallel instead of
-  one sequential job. This matters: with a single service looping over
-  every share, one share that takes longer than a day (first upload of
-  a large share, a slow link) would still be running at the next day's
-  scheduled start, and since systemd won't start a second instance of
-  a unit that's still active, the *entire* next day's backup - every
-  other share too - would silently be skipped. One unit instance per
-  share means a slow share only ever blocks its own next run.
+  one sequential job.
+  This two-layer setup (one static timer, one dynamic instance per
+  share) exists because of a real failure mode: with a single service
+  looping over every share in-process, one share that takes longer
+  than a day (first upload of a large share, a slow link) would still
+  be running at the next day's scheduled start, and since systemd
+  won't start a second instance of a unit that's still active, the
+  *entire* next day's backup - every other share too - would silently
+  be skipped. Making the dispatcher itself trivial (it only starts
+  jobs, never waits on them) means *it* is never still active the next
+  day; the actual per-share backups live in their own independent
+  units, so a slow share only ever blocks its own next run. It also
+  means a share added to `shares.conf` is picked up automatically at
+  the next run - no per-share timer to separately enable.
+  Trigger it on demand with `resticctl backup-all` (or
+  `systemctl start --no-block restic-backup.service` to go through the
+  timer's own unit) instead of waiting for 01:00.
 - **restic-maintenance.timer** fires **restic-maintenance.service**
   daily at 00:00 (midnight, the last job of the day), which runs
   `/opt/restic/bin/restic-maintenance.sh`: applies **each share's own
@@ -86,7 +99,8 @@ underlying scripts directly, not through `resticctl`).
   `/etc/restic/secrets.env`, chmod 600, holding the repo password and
   AWS credentials together) for configuration, and log every run to
   `/var/log/restic/{backup,maintenance}.log` as well as the systemd
-  journal (`journalctl -u 'restic-backup@*.service'`).
+  journal (`journalctl -u restic-backup.service -u
+  'restic-backup@*.service'`).
 - **`restic-verify.sh` / `resticctl verify`** (see "Restore
   verification" below) samples a few files from each share's latest
   snapshot and proves they're actually restorable, not just present.
@@ -151,17 +165,17 @@ Then:
    set -a; source /etc/restic/restic.env; source /etc/restic/secrets.env; set +a
    restic init --pack-size "$RESTIC_PACK_SIZE" -o s3.storage-class="$RESTIC_S3_STORAGE_CLASS"
    ```
-6. Enable and start the daily timers. `restic-backup@.timer` is a
-   *template* unit - one instance per share (see "How it fits
-   together" above), so enable it per share listed in `shares.conf`
-   rather than as a single unit:
+6. Enable and start the daily timers - just these two, regardless of
+   how many shares you have (see "How it fits together" above for why
+   `restic-backup.timer`/`.service` is a dispatcher, not the thing
+   that actually backs up any share):
    ```sh
-   resticctl enable-backups          # one restic-backup@<share>.timer per shares.conf entry
+   systemctl enable --now restic-backup.timer
    systemctl enable --now restic-maintenance.timer
    ```
-   Re-run `resticctl enable-backups` after adding a share to
-   `shares.conf`; removing one needs a manual `systemctl disable --now
-   restic-backup@<old-share>.timer` (it's never done automatically).
+   A share added to or removed from `shares.conf` takes effect
+   automatically at the dispatcher's next run - nothing to separately
+   enable or disable per share.
 
 ## Configuration reference (`/etc/restic/restic.env`)
 
@@ -532,8 +546,8 @@ Every run of every job is logged with timestamps to:
 - `/var/log/restic/maintenance.log`
 - `/var/log/restic/verify.log`
 
-and mirrored to the systemd journal (`journalctl -u 'restic-backup@*'
--u restic-maintenance -u restic-verify`). `logrotate/restic` (installed to
+and mirrored to the systemd journal (`journalctl -u restic-backup -u
+'restic-backup@*' -u restic-maintenance -u restic-verify`). `logrotate/restic` (installed to
 `/etc/logrotate.d/restic`) rotates these daily and keeps 90 days,
 compressed.
 
@@ -585,34 +599,44 @@ across), then run `install.sh` on the server as above.
 
 ```sh
 systemctl list-timers 'restic-*'                 # next scheduled runs
+systemctl status restic-backup.service           # dispatcher's last run
 systemctl status 'restic-backup@*.service'       # every share's last run
 systemctl status restic-maintenance.service
-journalctl -u 'restic-backup@*.service' -n 100
+journalctl -u restic-backup.service -u 'restic-backup@*.service' -n 100
 tail -f /var/log/restic/backup.log
 /opt/restic/bin/restic-snapshots.sh
 ```
 
-To run a job on demand outside its schedule:
+To run a job on demand outside its schedule, **use `--no-block`** - it
+is not optional here. These are `Type=oneshot` services, which systemd
+only considers "started" once the command actually *exits*; plain
+`systemctl start` waits (blocks your shell) for exactly that, i.e. for
+the entire backup to finish, which defeats the point of starting it
+in the background. `--no-block` returns the instant the job is
+queued instead:
 
 ```sh
-sudo systemctl start restic-backup@<share-name>.service   # one share, e.g. "finance"
-sudo systemctl start restic-maintenance.service
+sudo systemctl start --no-block restic-backup@<share-name>.service   # one share, e.g. "finance"
+sudo systemctl start --no-block restic-maintenance.service
 ```
 
-`systemctl start` on these oneshot services is fire-and-forget: it
-hands the job to systemd and returns immediately, so the backup keeps
-running after your shell/SSH session exits - you don't need `nohup`,
-`screen`, or `tmux` for this. To do that for *every* configured share
-at once (started in parallel, not waiting on each other):
+(if you *do* want to watch it run synchronously in your terminal,
+that's the one case to leave `--no-block` off - otherwise always
+include it). The job - and the backup it runs - keeps going after your
+shell/SSH session exits either way; `--no-block` only changes whether
+`systemctl start` itself waits around for it. To do this for *every*
+configured share at once (started in parallel, not waiting on each
+other):
 
 ```sh
 resticctl backup-all
 ```
 
-which is just a loop of `systemctl start restic-backup@<share>.service`
-over every entry in `shares.conf` - check progress afterward with
-`resticctl status`, `systemctl status 'restic-backup@*.service'`, or
-`journalctl -u 'restic-backup@*.service' -f`.
+which is just a loop of `systemctl start --no-block
+restic-backup@<share>.service` over every entry in `shares.conf` -
+check progress afterward with `resticctl status`, `systemctl status
+'restic-backup@*.service'`, or `journalctl -u
+'restic-backup@*.service' -f`.
 
 Snapshots created this way still get the `RESTIC_BACKUP_TAG` value
 (`"scheduled"` by default) - systemd has no way to tell "the timer
