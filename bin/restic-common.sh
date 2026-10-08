@@ -221,12 +221,22 @@ notify() {
 
 # --- locking -------------------------------------------------------------
 #
-# Backup and maintenance must never run at the same time against the
-# same repository (maintenance prunes/rewrites the same pack files a
-# concurrent backup might be writing). Both jobs take the same
-# exclusive lock file before touching the repository.
+# restic itself allows multiple `backup` runs against the same
+# repository to proceed concurrently (that's how restic-backup@.service
+# parallelizes - one systemd instance per share, see its unit file) but
+# never alongside `prune` (restic-maintenance.sh, restic-forget.sh),
+# which needs exclusive access to safely rewrite/delete pack files. We
+# mirror that with a single flock file used in two modes:
+#   - shared:    restic-backup.sh - any number of these can hold the
+#                lock at once, so N shares really do back up in
+#                parallel instead of one timer-driven script serializing
+#                them (the original bug report: one share taking over a
+#                day blocked every other share's backup that day).
+#   - exclusive: restic-maintenance.sh / restic-forget.sh - waits for
+#                every shared holder to release first, then blocks any
+#                new one until it's done.
 #
-# acquire_lock <timeout_seconds>
+# acquire_lock <timeout_seconds> <shared|exclusive>
 #   timeout_seconds = 0  -> try once, return immediately if already held
 #   timeout_seconds > 0  -> wait up to that many seconds for the lock
 #
@@ -234,6 +244,14 @@ notify() {
 # process's lifetime, released automatically on exit), 1 otherwise.
 acquire_lock() {
     local timeout="${1:-0}"
+    local mode="${2:?acquire_lock: mode ('shared' or 'exclusive') is required}"
+    local flag
+
+    case "$mode" in
+        shared)    flag="-s" ;;
+        exclusive) flag="-x" ;;
+        *) log_error "acquire_lock: invalid mode '$mode' (expected 'shared' or 'exclusive')"; return 1 ;;
+    esac
 
     exec {RESTIC_LOCK_FD}>"$RESTIC_LOCK_FILE" || {
         log_error "cannot open lock file $RESTIC_LOCK_FILE"
@@ -241,9 +259,9 @@ acquire_lock() {
     }
 
     if [[ "$timeout" -eq 0 ]]; then
-        flock -n "$RESTIC_LOCK_FD"
+        flock -n "$flag" "$RESTIC_LOCK_FD"
     else
-        flock -w "$timeout" "$RESTIC_LOCK_FD"
+        flock -w "$timeout" "$flag" "$RESTIC_LOCK_FD"
     fi
 }
 

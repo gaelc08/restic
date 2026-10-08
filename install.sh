@@ -8,7 +8,8 @@
 # Does NOT enable or start the timers, and does NOT overwrite an
 # existing /etc/restic/restic.env - edit the config first
 # (see README.md), then run:
-#   systemctl enable --now restic-backup.timer restic-maintenance.timer
+#   resticctl enable-backups   # one restic-backup@<share>.timer per shares.conf entry
+#   systemctl enable --now restic-maintenance.timer
 
 set -euo pipefail
 
@@ -65,7 +66,7 @@ sed 's/^/    /' "$VERSION_FILE"
 
 echo "==> Creating cache/tmp directories"
 # These must exist on disk *before* the systemd services ever start:
-# ReadWritePaths= in restic-backup.service / restic-maintenance.service
+# ReadWritePaths= in restic-backup@.service / restic-maintenance.service
 # bind-mounts them into the service's private mount namespace before
 # ExecStart runs, and unlike the script's own `mkdir -p` (which only
 # runs after that), systemd will not create them for you - it fails
@@ -100,8 +101,13 @@ echo "==> Installing logrotate config"
 install -m 0644 "${SCRIPT_DIR}/logrotate/restic" /etc/logrotate.d/restic
 
 echo "==> Installing systemd units"
-install -m 0644 "${SCRIPT_DIR}/systemd/restic-backup.service"      /etc/systemd/system/restic-backup.service
-install -m 0644 "${SCRIPT_DIR}/systemd/restic-backup.timer"        /etc/systemd/system/restic-backup.timer
+# restic-backup@.service/.timer is a template unit (note the "@") -
+# one instance per share (e.g. restic-backup@finance.timer), so N
+# shares back up in parallel instead of one sequential service where a
+# single slow share could block every other share's backup too. See
+# bin/restic-backup.sh's header comment.
+install -m 0644 "${SCRIPT_DIR}/systemd/restic-backup@.service"     /etc/systemd/system/restic-backup@.service
+install -m 0644 "${SCRIPT_DIR}/systemd/restic-backup@.timer"       /etc/systemd/system/restic-backup@.timer
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-maintenance.service" /etc/systemd/system/restic-maintenance.service
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-maintenance.timer"   /etc/systemd/system/restic-maintenance.timer
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-report.service"      /etc/systemd/system/restic-report.service
@@ -126,9 +132,19 @@ cat <<'EOF'
          restic init --pack-size "$RESTIC_PACK_SIZE" \
              -o s3.storage-class="$RESTIC_S3_STORAGE_CLASS"
 
-Then enable the daily timers:
-    systemctl enable --now restic-backup.timer
+Then enable the daily timers. restic-backup@.timer is a *template*
+unit - enable one instance per share named in shares.conf (its share
+name = the basename of its path, e.g. "finance" for
+/mnt/share-finance), so they actually run in parallel:
+    for share in $(awk '!/^#/ && NF {print $1}' /etc/restic/shares.conf); do
+        systemctl enable --now "restic-backup@$(basename "$share").timer"
+    done
     systemctl enable --now restic-maintenance.timer
+
+Re-run that loop (or `resticctl enable-backups`, same thing) whenever
+you add or remove a share in shares.conf - it won't disable a timer
+instance for a share you've since removed, so do that by hand:
+    systemctl disable --now restic-backup@<old-share-name>.timer
 
 The daily email report (latest snapshot per configured share) only
 reads fast repository metadata, so it's safe to schedule too - enable
@@ -151,11 +167,12 @@ monitoring to poll.
 
 Check status any time with:
     systemctl list-timers 'restic-*'
-    journalctl -u restic-backup.service -u restic-maintenance.service
+    journalctl -u 'restic-backup@*.service' -u restic-maintenance.service
     tail -f /var/log/restic/backup.log /var/log/restic/maintenance.log
 
 Or drive everything through the resticctl CLI (installed onto PATH):
     resticctl status
+    resticctl enable-backups
     resticctl backup --manual
     resticctl maintenance
     resticctl verify --target /path/with/free/space

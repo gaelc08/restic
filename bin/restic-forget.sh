@@ -83,7 +83,7 @@ if [[ $ASSUME_YES -ne 1 ]]; then
     esac
 fi
 
-if ! acquire_lock "${RESTIC_BACKUP_LOCK_TIMEOUT:-300}"; then
+if ! acquire_lock "${RESTIC_BACKUP_LOCK_TIMEOUT:-300}" exclusive; then
     log_error "could not acquire lock $RESTIC_LOCK_FILE (backup or maintenance running?); aborting"
     exit 1
 fi

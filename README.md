@@ -44,35 +44,49 @@ underlying scripts directly, not through `resticctl`).
 
 ## How it fits together
 
-- **restic-backup.timer** fires **restic-backup.service** daily at
-  01:00 (+ up to 10 min random delay), which runs
-  `/opt/restic/bin/restic-backup.sh`. That script verifies every
-  configured share is actually mounted, then backs up **each share as
-  its own `restic backup` call** - one snapshot per share, per run
-  (not one combined multi-path snapshot) - so each can carry its own
-  retention policy.
+- **`restic-backup@.timer` is a template unit - one instance per
+  share**, e.g. `restic-backup@finance.timer`, enabled via `resticctl
+  enable-backups` (see Install below). Each instance fires daily at
+  01:00 (+ up to 10 min random delay, picked independently per
+  instance) and runs `/opt/restic/bin/restic-backup.sh <share-name>`,
+  which backs up just that one share as **its own `restic backup`
+  call** - one snapshot per share, per run - so each can carry its own
+  retention policy, *and* so N shares back up in parallel instead of
+  one sequential job. This matters: with a single service looping over
+  every share, one share that takes longer than a day (first upload of
+  a large share, a slow link) would still be running at the next day's
+  scheduled start, and since systemd won't start a second instance of
+  a unit that's still active, the *entire* next day's backup - every
+  other share too - would silently be skipped. One unit instance per
+  share means a slow share only ever blocks its own next run.
 - **restic-maintenance.timer** fires **restic-maintenance.service**
   daily at 00:00 (midnight, the last job of the day), which runs
   `/opt/restic/bin/restic-maintenance.sh`: applies **each share's own
-  retention policy** (`restic forget --path <share> --keep-...`, once
-  per share), then a single repository-wide `restic prune
-  --max-repack-size 0`, then an optional metadata-only `restic check`.
-- **Backup and maintenance never run at the same time.** Both scripts
-  take the same exclusive lock (`RESTIC_LOCK_FILE`,
-  `/run/restic/restic.lock` by default) before touching the
-  repository:
-  - if maintenance fires while a backup is still running, it logs
+  retention policy** (`restic forget --tag scheduled --path <share>
+  --keep-...`, once per share), then a single repository-wide `restic
+  prune --max-repack-size 0`, then an optional metadata-only `restic
+  check`.
+- **Backups run in parallel with each other, never with maintenance.**
+  All of them take the same lock file (`RESTIC_LOCK_FILE`,
+  `/run/restic/restic.lock` by default), but in different modes: every
+  `restic-backup@<share>.service` instance takes it in *shared* mode
+  (any number can hold it at once), while maintenance takes it in
+  *exclusive* mode (waits for every backup to release it first, then
+  blocks new ones) - restic itself allows concurrent `backup` runs
+  against one repository, just never alongside a `prune`. See
+  `acquire_lock()` in `bin/restic-common.sh`.
+  - if maintenance fires while any backup is still running, it logs
     that, exits immediately without doing anything, and simply tries
     again at its next scheduled run;
   - if a backup fires while maintenance is still finishing up, it
     waits up to `RESTIC_BACKUP_LOCK_TIMEOUT` seconds (default 300) for
     the lock, then fails loudly (non-zero exit, logged) if maintenance
     still hasn't released it.
-- Both scripts source `/etc/restic/restic.env` (and
+- All scripts source `/etc/restic/restic.env` (and
   `/etc/restic/secrets.env`, chmod 600, holding the repo password and
   AWS credentials together) for configuration, and log every run to
   `/var/log/restic/{backup,maintenance}.log` as well as the systemd
-  journal (`journalctl -u restic-backup.service`).
+  journal (`journalctl -u 'restic-backup@*.service'`).
 - **`restic-verify.sh` / `resticctl verify`** (see "Restore
   verification" below) samples a few files from each share's latest
   snapshot and proves they're actually restorable, not just present.
@@ -84,11 +98,10 @@ underlying scripts directly, not through `resticctl`).
   notification on failure (or always, if configured) - see
   "Alerting on failure" below.
 - **restic-report.timer** fires **restic-report.service** daily at
-  06:00, which runs `/opt/restic/bin/restic-report.sh`: emails one
-  plain-text digest (last backup/maintenance/verify status + a
-  per-share snapshot summary). Unlike verify, this only reads local
-  status files and fast metadata, so it's safe to schedule - see
-  "Daily status report" below.
+  06:00, which runs `/opt/restic/bin/restic-report.sh`: emails an HTML
+  table of the latest snapshot per configured share. Unlike verify,
+  this only reads fast repository metadata, so it's safe to schedule -
+  see "Daily backup report" below.
 - `restic-snapshots.sh` is a standalone script (and sourceable shell
   function) to list snapshots on demand.
 
@@ -138,11 +151,17 @@ Then:
    set -a; source /etc/restic/restic.env; source /etc/restic/secrets.env; set +a
    restic init --pack-size "$RESTIC_PACK_SIZE" -o s3.storage-class="$RESTIC_S3_STORAGE_CLASS"
    ```
-6. Enable and start the daily timers:
+6. Enable and start the daily timers. `restic-backup@.timer` is a
+   *template* unit - one instance per share (see "How it fits
+   together" above), so enable it per share listed in `shares.conf`
+   rather than as a single unit:
    ```sh
-   systemctl enable --now restic-backup.timer
+   resticctl enable-backups          # one restic-backup@<share>.timer per shares.conf entry
    systemctl enable --now restic-maintenance.timer
    ```
+   Re-run `resticctl enable-backups` after adding a share to
+   `shares.conf`; removing one needs a manual `systemctl disable --now
+   restic-backup@<old-share>.timer` (it's never done automatically).
 
 ## Configuration reference (`/etc/restic/restic.env`)
 
@@ -163,7 +182,7 @@ Then:
 | `REQUIRE_MOUNTED` | abort backup if a configured share isn't mounted |
 | `RESTIC_MAINTENANCE_EXTRA_ARGS` | extra flags for the maintenance `prune` (default `--max-repack-size 0`, required for Glacier/tape) |
 | `RESTIC_RUN_CHECK` | run metadata-only `restic check` after prune |
-| `RESTIC_LOCK_FILE` | shared lock preventing backup/maintenance overlap |
+| `RESTIC_LOCK_FILE` | lock file backups hold in shared mode (parallel with each other) and maintenance holds in exclusive mode (never alongside a backup) |
 | `RESTIC_BACKUP_LOCK_TIMEOUT` | seconds backup waits for the lock before failing |
 | `LOG_DIR`, `*_LOG_FILE` | log locations |
 | `RESTIC_JSON_LOG` | emit `restic backup --json` progress into the log |
@@ -177,7 +196,7 @@ picks it up correctly.
 
 **If you change `RESTIC_CACHE_DIR` or `RESTIC_TMP_DIR`** away from the
 `/opt/restic/restic-cache` / `/opt/restic/restic-tmp` defaults, also
-update `ReadWritePaths=` in both `systemd/restic-backup.service` and
+update `ReadWritePaths=` in `systemd/restic-backup@.service` and
 `systemd/restic-maintenance.service` to match, and `mkdir` the new
 paths yourself. Systemd bind-mounts everything in `ReadWritePaths=`
 into the service's sandbox *before* `ExecStart` runs, so - unlike the
@@ -513,8 +532,8 @@ Every run of every job is logged with timestamps to:
 - `/var/log/restic/maintenance.log`
 - `/var/log/restic/verify.log`
 
-and mirrored to the systemd journal (`journalctl -u restic-backup -u
-restic-maintenance -u restic-verify`). `logrotate/restic` (installed to
+and mirrored to the systemd journal (`journalctl -u 'restic-backup@*'
+-u restic-maintenance -u restic-verify`). `logrotate/restic` (installed to
 `/etc/logrotate.d/restic`) rotates these daily and keeps 90 days,
 compressed.
 
@@ -566,9 +585,9 @@ across), then run `install.sh` on the server as above.
 
 ```sh
 systemctl list-timers 'restic-*'                 # next scheduled runs
-systemctl status restic-backup.service
+systemctl status 'restic-backup@*.service'       # every share's last run
 systemctl status restic-maintenance.service
-journalctl -u restic-backup.service -n 100
+journalctl -u 'restic-backup@*.service' -n 100
 tail -f /var/log/restic/backup.log
 /opt/restic/bin/restic-snapshots.sh
 ```
@@ -576,7 +595,7 @@ tail -f /var/log/restic/backup.log
 To run a job on demand outside its schedule:
 
 ```sh
-sudo systemctl start restic-backup.service
+sudo systemctl start restic-backup@<share-name>.service   # one share, e.g. "finance"
 sudo systemctl start restic-maintenance.service
 ```
 

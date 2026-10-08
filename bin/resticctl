@@ -6,8 +6,9 @@
 # logic is duplicated or reimplemented here.
 #
 # Usage:
-#   resticctl backup [--manual] [share-path]
+#   resticctl backup [--manual] [share-name-or-path]
 #   resticctl maintenance
+#   resticctl enable-backups
 #   resticctl list [restic snapshots flags...]
 #   resticctl delete [--yes] [--no-prune] <snapshot-id...>
 #   resticctl verify --target <path> [share-path]
@@ -30,10 +31,26 @@ usage() {
 Usage: resticctl <command> [args...]
 
 Commands:
-  backup [--manual] [share-path] Run a backup of all configured shares,
-                                  or just one with a share path.
-                                  --manual tags the run "manual" instead
-                                  of the configured RESTIC_BACKUP_TAG.
+  backup [--manual] [share-name-or-path]
+                                  Run a backup of all configured shares
+                                  sequentially in this one process, or
+                                  just one (by its share name, e.g.
+                                  "finance", or its full shares.conf
+                                  path). --manual tags the run "manual"
+                                  instead of the configured
+                                  RESTIC_BACKUP_TAG. The scheduled path
+                                  is restic-backup@<share>.timer, one
+                                  instance per share running in
+                                  parallel - see enable-backups below;
+                                  this subcommand is for an ad-hoc run.
+
+  enable-backups                 Enable (and start) one
+                                  restic-backup@<share>.timer instance
+                                  for every share currently in
+                                  shares.conf. Re-run after adding a
+                                  share; removing one needs a manual
+                                  `systemctl disable --now
+                                  restic-backup@<old-share>.timer`.
 
   maintenance                    Apply each share's retention policy
                                   (forget), prune, and check.
@@ -94,6 +111,34 @@ case "$cmd" in
     maintenance)
         exec "${SCRIPT_DIR}/restic-maintenance.sh" "$@"
         ;;
+    enable-backups)
+        # restic-backup@.timer is a template unit - it can't be enabled
+        # on its own (systemd needs an instance name per share), and
+        # shares.conf is only known at runtime, not at install time, so
+        # this loops it the same way install.sh's printed instructions
+        # do. Safe to re-run any time (systemctl enable/start are
+        # idempotent); it never disables a timer for a share you've
+        # since removed from shares.conf - do that by hand.
+        env_file="${RESTIC_ENV_FILE:-/etc/restic/restic.env}"
+        if [[ ! -r "$env_file" ]]; then
+            echo "cannot read $env_file" >&2
+            exit 1
+        fi
+        shares_file="$(
+            # shellcheck disable=SC1090
+            source "$env_file" >/dev/null 2>&1
+            echo "${SHARES_FILE:-/etc/restic/shares.conf}"
+        )"
+        if [[ ! -r "$shares_file" ]]; then
+            echo "cannot read SHARES_FILE: $shares_file" >&2
+            exit 1
+        fi
+        while read -r path; do
+            name="$(basename "$path")"
+            echo "enabling restic-backup@${name}.timer"
+            systemctl enable --now "restic-backup@${name}.timer"
+        done < <(awk '!/^#/ && NF {print $1}' "$shares_file")
+        ;;
     list)
         exec "${SCRIPT_DIR}/restic-snapshots.sh" "$@"
         ;;
@@ -117,7 +162,7 @@ case "$cmd" in
     status)
         systemctl list-timers 'restic-*' --no-pager 2>/dev/null
         echo
-        systemctl status restic-backup.service --no-pager -n 5 2>/dev/null
+        systemctl status 'restic-backup@*.service' --no-pager -n 5 2>/dev/null
         echo
         systemctl status restic-maintenance.service --no-pager -n 5 2>/dev/null
         echo
