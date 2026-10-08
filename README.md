@@ -592,27 +592,36 @@ tail -f /var/log/restic/backup.log
 /opt/restic/bin/restic-snapshots.sh
 ```
 
-To run a job on demand outside its schedule:
+To run a job on demand outside its schedule, **use `--no-block`** - it
+is not optional here. These are `Type=oneshot` services, which systemd
+only considers "started" once the command actually *exits*; plain
+`systemctl start` waits (blocks your shell) for exactly that, i.e. for
+the entire backup to finish, which defeats the point of starting it
+in the background. `--no-block` returns the instant the job is
+queued instead:
 
 ```sh
-sudo systemctl start restic-backup@<share-name>.service   # one share, e.g. "finance"
-sudo systemctl start restic-maintenance.service
+sudo systemctl start --no-block restic-backup@<share-name>.service   # one share, e.g. "finance"
+sudo systemctl start --no-block restic-maintenance.service
 ```
 
-`systemctl start` on these oneshot services is fire-and-forget: it
-hands the job to systemd and returns immediately, so the backup keeps
-running after your shell/SSH session exits - you don't need `nohup`,
-`screen`, or `tmux` for this. To do that for *every* configured share
-at once (started in parallel, not waiting on each other):
+(if you *do* want to watch it run synchronously in your terminal,
+that's the one case to leave `--no-block` off - otherwise always
+include it). The job - and the backup it runs - keeps going after your
+shell/SSH session exits either way; `--no-block` only changes whether
+`systemctl start` itself waits around for it. To do this for *every*
+configured share at once (started in parallel, not waiting on each
+other):
 
 ```sh
 resticctl backup-all
 ```
 
-which is just a loop of `systemctl start restic-backup@<share>.service`
-over every entry in `shares.conf` - check progress afterward with
-`resticctl status`, `systemctl status 'restic-backup@*.service'`, or
-`journalctl -u 'restic-backup@*.service' -f`.
+which is just a loop of `systemctl start --no-block
+restic-backup@<share>.service` over every entry in `shares.conf` -
+check progress afterward with `resticctl status`, `systemctl status
+'restic-backup@*.service'`, or `journalctl -u
+'restic-backup@*.service' -f`.
 
 Snapshots created this way still get the `RESTIC_BACKUP_TAG` value
 (`"scheduled"` by default) - systemd has no way to tell "the timer

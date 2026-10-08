@@ -124,11 +124,19 @@ case "$cmd" in
         exec "${SCRIPT_DIR}/restic-backup.sh" "$@"
         ;;
     backup-all)
-        # Fire-and-forget: `systemctl start` on a oneshot service just
-        # hands the job to systemd and returns immediately - it does not
-        # wait for the backup to finish - so this loop completes in a
-        # couple seconds and every share then backs up in parallel,
-        # independently of this command or your session.
+        # Fire-and-forget: --no-block is required here, not optional.
+        # `systemctl start` on a Type=oneshot unit (see
+        # restic-backup@.service) is NOT "launch and return" by default -
+        # a oneshot unit only becomes "active" once its ExecStart process
+        # exits, and plain `systemctl start` blocks until the job it
+        # queued actually completes. Without --no-block this loop would
+        # wait out each share's entire backup in turn before even
+        # starting the next one - exactly the sequential blocking this
+        # whole per-share-unit design exists to avoid. --no-block makes
+        # it return the instant the job is queued, so every share starts
+        # backing up in parallel and this command (and your session)
+        # returns in a couple seconds regardless of how long the backups
+        # themselves take.
         env_file="${RESTIC_ENV_FILE:-/etc/restic/restic.env}"
         if [[ ! -r "$env_file" ]]; then
             echo "cannot read $env_file" >&2
@@ -146,7 +154,7 @@ case "$cmd" in
         while read -r path; do
             name="$(basename "$path")"
             echo "starting restic-backup@${name}.service"
-            systemctl start "restic-backup@${name}.service"
+            systemctl start --no-block "restic-backup@${name}.service"
         done < <(awk '!/^#/ && NF {print $1}' "$shares_file")
         ;;
     maintenance)
