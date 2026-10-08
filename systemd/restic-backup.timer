@@ -1,0 +1,28 @@
+[Unit]
+Description=Daily timer for restic backup dispatch (one service per share)
+
+[Timer]
+# Daily at 01:00 local time. restic-maintenance.timer fires at 00:00
+# (i.e. just before this, at the end of the previous day's cycle), so
+# under normal conditions it never overlaps this job; the lock in
+# bin/restic-common.sh (acquire_lock) is the actual guarantee.
+#
+# This timer only ever triggers the dispatcher (restic-backup.service,
+# which starts every restic-backup@<share>.service and exits within
+# seconds) - never the actual per-share backups directly. That's what
+# lets this fire reliably every day even if yesterday's backup for
+# some share is still running: the dispatcher itself is never "stuck"
+# active, only the individual restic-backup@<share>.service instances
+# it started are, and each of those is independent of this timer.
+OnCalendar=*-*-* 01:00:00
+# Spread real start time over 10 minutes to avoid every share hitting
+# the S3 endpoint in the same second - the dispatcher's own start can
+# jitter without staggering anything else, since it starts every share
+# back-to-back in one quick pass regardless.
+RandomizedDelaySec=600
+# If the host was off/asleep at 01:00, run as soon as possible after
+# boot instead of silently skipping a day.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

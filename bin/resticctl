@@ -9,7 +9,6 @@
 #   resticctl backup [--manual] [share-name-or-path]
 #   resticctl backup-all
 #   resticctl maintenance
-#   resticctl enable-backups
 #   resticctl list [restic snapshots flags...]
 #   resticctl delete [--yes] [--no-prune] <snapshot-id...>
 #   resticctl verify --target <path> [share-path]
@@ -40,32 +39,30 @@ Commands:
                                   path). --manual tags the run "manual"
                                   instead of the configured
                                   RESTIC_BACKUP_TAG. The scheduled path
-                                  is restic-backup@<share>.timer, one
-                                  instance per share running in
-                                  parallel - see enable-backups below;
-                                  this subcommand is for an ad-hoc run.
+                                  is restic-backup.timer -> backup-all
+                                  below, one restic-backup@<share>.service
+                                  instance per share, running in
+                                  parallel; this subcommand is for an
+                                  ad-hoc run from this one process.
 
   backup-all                     Start every configured share's backup
                                   right now, in parallel, without
                                   waiting for any of them: one
-                                  `systemctl start
+                                  `systemctl start --no-block
                                   restic-backup@<share>.service` per
-                                  share in shares.conf. Each keeps
-                                  running under systemd after this
-                                  command (and your session) exits -
-                                  check progress with `resticctl
-                                  status`, `systemctl status
+                                  share currently in shares.conf
+                                  (re-read fresh every call - a share
+                                  you just added is picked up
+                                  immediately, no separate enable step).
+                                  Each keeps running under systemd
+                                  after this command (and your session)
+                                  exits - check progress with
+                                  `resticctl status`, `systemctl status
                                   'restic-backup@*.service'`, or
                                   `journalctl -u
-                                  'restic-backup@*.service' -f`.
-
-  enable-backups                 Enable (and start) one
-                                  restic-backup@<share>.timer instance
-                                  for every share currently in
-                                  shares.conf. Re-run after adding a
-                                  share; removing one needs a manual
-                                  `systemctl disable --now
-                                  restic-backup@<old-share>.timer`.
+                                  'restic-backup@*.service' -f`. This is
+                                  also exactly what restic-backup.timer
+                                  runs once daily.
 
   maintenance                    Apply each share's retention policy
                                   (forget), prune, and check.
@@ -124,69 +121,10 @@ case "$cmd" in
         exec "${SCRIPT_DIR}/restic-backup.sh" "$@"
         ;;
     backup-all)
-        # Fire-and-forget: --no-block is required here, not optional.
-        # `systemctl start` on a Type=oneshot unit (see
-        # restic-backup@.service) is NOT "launch and return" by default -
-        # a oneshot unit only becomes "active" once its ExecStart process
-        # exits, and plain `systemctl start` blocks until the job it
-        # queued actually completes. Without --no-block this loop would
-        # wait out each share's entire backup in turn before even
-        # starting the next one - exactly the sequential blocking this
-        # whole per-share-unit design exists to avoid. --no-block makes
-        # it return the instant the job is queued, so every share starts
-        # backing up in parallel and this command (and your session)
-        # returns in a couple seconds regardless of how long the backups
-        # themselves take.
-        env_file="${RESTIC_ENV_FILE:-/etc/restic/restic.env}"
-        if [[ ! -r "$env_file" ]]; then
-            echo "cannot read $env_file" >&2
-            exit 1
-        fi
-        shares_file="$(
-            # shellcheck disable=SC1090
-            source "$env_file" >/dev/null 2>&1
-            echo "${SHARES_FILE:-/etc/restic/shares.conf}"
-        )"
-        if [[ ! -r "$shares_file" ]]; then
-            echo "cannot read SHARES_FILE: $shares_file" >&2
-            exit 1
-        fi
-        while read -r path; do
-            name="$(basename "$path")"
-            echo "starting restic-backup@${name}.service"
-            systemctl start --no-block "restic-backup@${name}.service"
-        done < <(awk '!/^#/ && NF {print $1}' "$shares_file")
+        exec "${SCRIPT_DIR}/restic-backup-dispatch.sh" "$@"
         ;;
     maintenance)
         exec "${SCRIPT_DIR}/restic-maintenance.sh" "$@"
-        ;;
-    enable-backups)
-        # restic-backup@.timer is a template unit - it can't be enabled
-        # on its own (systemd needs an instance name per share), and
-        # shares.conf is only known at runtime, not at install time, so
-        # this loops it the same way install.sh's printed instructions
-        # do. Safe to re-run any time (systemctl enable/start are
-        # idempotent); it never disables a timer for a share you've
-        # since removed from shares.conf - do that by hand.
-        env_file="${RESTIC_ENV_FILE:-/etc/restic/restic.env}"
-        if [[ ! -r "$env_file" ]]; then
-            echo "cannot read $env_file" >&2
-            exit 1
-        fi
-        shares_file="$(
-            # shellcheck disable=SC1090
-            source "$env_file" >/dev/null 2>&1
-            echo "${SHARES_FILE:-/etc/restic/shares.conf}"
-        )"
-        if [[ ! -r "$shares_file" ]]; then
-            echo "cannot read SHARES_FILE: $shares_file" >&2
-            exit 1
-        fi
-        while read -r path; do
-            name="$(basename "$path")"
-            echo "enabling restic-backup@${name}.timer"
-            systemctl enable --now "restic-backup@${name}.timer"
-        done < <(awk '!/^#/ && NF {print $1}' "$shares_file")
         ;;
     list)
         exec "${SCRIPT_DIR}/restic-snapshots.sh" "$@"
@@ -210,6 +148,8 @@ case "$cmd" in
         ;;
     status)
         systemctl list-timers 'restic-*' --no-pager 2>/dev/null
+        echo
+        systemctl status restic-backup.service --no-pager -n 5 2>/dev/null
         echo
         systemctl status 'restic-backup@*.service' --no-pager -n 5 2>/dev/null
         echo

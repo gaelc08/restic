@@ -3,7 +3,7 @@ Description=Run restic maintenance (forget/prune/check) daily
 
 [Timer]
 # Daily at 00:00 (midnight) local time - the last job of the day,
-# roughly 23 hours after restic-backup@.timer's 01:00 start, giving
+# roughly 23 hours after restic-backup.timer's 01:00 start, giving
 # every share's backup as much of the day as possible to finish. This
 # is a convenience, not a hard guarantee: restic-maintenance.service
 # takes the same lock (/run/restic/restic.lock) as every

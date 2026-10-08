@@ -8,7 +8,7 @@
 # Does NOT enable or start the timers, and does NOT overwrite an
 # existing /etc/restic/restic.env - edit the config first
 # (see README.md), then run:
-#   resticctl enable-backups   # one restic-backup@<share>.timer per shares.conf entry
+#   systemctl enable --now restic-backup.timer
 #   systemctl enable --now restic-maintenance.timer
 
 set -euo pipefail
@@ -22,14 +22,15 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
 echo "==> Installing scripts to /opt/restic/bin"
 mkdir -p /opt/restic/bin
-install -m 0755 "${SCRIPT_DIR}/bin/restic-backup.sh"      /opt/restic/bin/restic-backup.sh
-install -m 0755 "${SCRIPT_DIR}/bin/restic-maintenance.sh" /opt/restic/bin/restic-maintenance.sh
-install -m 0755 "${SCRIPT_DIR}/bin/restic-snapshots.sh"   /opt/restic/bin/restic-snapshots.sh
-install -m 0755 "${SCRIPT_DIR}/bin/restic-forget.sh"      /opt/restic/bin/restic-forget.sh
-install -m 0755 "${SCRIPT_DIR}/bin/restic-verify.sh"      /opt/restic/bin/restic-verify.sh
-install -m 0755 "${SCRIPT_DIR}/bin/restic-report.sh"      /opt/restic/bin/restic-report.sh
-install -m 0644 "${SCRIPT_DIR}/bin/restic-common.sh"      /opt/restic/bin/restic-common.sh
-install -m 0755 "${SCRIPT_DIR}/bin/resticctl"              /opt/restic/bin/resticctl
+install -m 0755 "${SCRIPT_DIR}/bin/restic-backup.sh"          /opt/restic/bin/restic-backup.sh
+install -m 0755 "${SCRIPT_DIR}/bin/restic-backup-dispatch.sh" /opt/restic/bin/restic-backup-dispatch.sh
+install -m 0755 "${SCRIPT_DIR}/bin/restic-maintenance.sh"     /opt/restic/bin/restic-maintenance.sh
+install -m 0755 "${SCRIPT_DIR}/bin/restic-snapshots.sh"       /opt/restic/bin/restic-snapshots.sh
+install -m 0755 "${SCRIPT_DIR}/bin/restic-forget.sh"          /opt/restic/bin/restic-forget.sh
+install -m 0755 "${SCRIPT_DIR}/bin/restic-verify.sh"          /opt/restic/bin/restic-verify.sh
+install -m 0755 "${SCRIPT_DIR}/bin/restic-report.sh"          /opt/restic/bin/restic-report.sh
+install -m 0644 "${SCRIPT_DIR}/bin/restic-common.sh"          /opt/restic/bin/restic-common.sh
+install -m 0755 "${SCRIPT_DIR}/bin/resticctl"                 /opt/restic/bin/resticctl
 
 echo "==> Linking resticctl onto PATH"
 ln -sf /opt/restic/bin/resticctl /usr/local/sbin/resticctl
@@ -73,7 +74,9 @@ echo "==> Creating cache/tmp directories"
 # with "226/NAMESPACE" instead. If you change RESTIC_CACHE_DIR or
 # RESTIC_TMP_DIR in restic.env away from these defaults, update
 # ReadWritePaths= in both unit files to match and create the new
-# directories the same way.
+# directories the same way. (restic-backup.service, the dispatcher,
+# doesn't list these - it only starts the per-share instances and
+# never touches the cache/tmp dirs itself.)
 #
 # restic-verify.sh has no systemd unit and takes its restore target as
 # a required --target argument each time (not a config setting), so
@@ -101,13 +104,20 @@ echo "==> Installing logrotate config"
 install -m 0644 "${SCRIPT_DIR}/logrotate/restic" /etc/logrotate.d/restic
 
 echo "==> Installing systemd units"
-# restic-backup@.service/.timer is a template unit (note the "@") -
-# one instance per share (e.g. restic-backup@finance.timer), so N
-# shares back up in parallel instead of one sequential service where a
-# single slow share could block every other share's backup too. See
-# bin/restic-backup.sh's header comment.
+# restic-backup@.service is a template unit (note the "@") - one
+# instance per share (e.g. restic-backup@finance.service), so N shares
+# back up in parallel instead of one sequential service where a single
+# slow share could block every other share's backup too. It has no
+# timer of its own: restic-backup.timer fires restic-backup.service
+# (the dispatcher, bin/restic-backup-dispatch.sh) once daily, which
+# starts every restic-backup@<share>.service instance for whatever is
+# currently in shares.conf and exits - so a share you add to
+# shares.conf is picked up automatically next time this fires, with no
+# separate per-share enable step. See bin/restic-backup.sh's and
+# bin/restic-backup-dispatch.sh's header comments.
+install -m 0644 "${SCRIPT_DIR}/systemd/restic-backup.service"      /etc/systemd/system/restic-backup.service
+install -m 0644 "${SCRIPT_DIR}/systemd/restic-backup.timer"        /etc/systemd/system/restic-backup.timer
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-backup@.service"     /etc/systemd/system/restic-backup@.service
-install -m 0644 "${SCRIPT_DIR}/systemd/restic-backup@.timer"       /etc/systemd/system/restic-backup@.timer
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-maintenance.service" /etc/systemd/system/restic-maintenance.service
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-maintenance.timer"   /etc/systemd/system/restic-maintenance.timer
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-report.service"      /etc/systemd/system/restic-report.service
@@ -132,19 +142,18 @@ cat <<'EOF'
          restic init --pack-size "$RESTIC_PACK_SIZE" \
              -o s3.storage-class="$RESTIC_S3_STORAGE_CLASS"
 
-Then enable the daily timers. restic-backup@.timer is a *template*
-unit - enable one instance per share named in shares.conf (its share
-name = the basename of its path, e.g. "finance" for
-/mnt/share-finance), so they actually run in parallel:
-    for share in $(awk '!/^#/ && NF {print $1}' /etc/restic/shares.conf); do
-        systemctl enable --now "restic-backup@$(basename "$share").timer"
-    done
+Then enable the daily timers - just these two, regardless of how many
+shares you have:
+    systemctl enable --now restic-backup.timer
     systemctl enable --now restic-maintenance.timer
 
-Re-run that loop (or `resticctl enable-backups`, same thing) whenever
-you add or remove a share in shares.conf - it won't disable a timer
-instance for a share you've since removed, so do that by hand:
-    systemctl disable --now restic-backup@<old-share-name>.timer
+restic-backup.timer fires a dispatcher once daily that reads
+shares.conf fresh and starts one restic-backup@<share>.service
+instance per share (in parallel) - a share you add or remove in
+shares.conf takes effect automatically at the next run, no separate
+per-share enable step. To run that same dispatch immediately instead
+of waiting for the timer:
+    resticctl backup-all
 
 The daily email report (latest snapshot per configured share) only
 reads fast repository metadata, so it's safe to schedule too - enable
@@ -167,12 +176,12 @@ monitoring to poll.
 
 Check status any time with:
     systemctl list-timers 'restic-*'
-    journalctl -u 'restic-backup@*.service' -u restic-maintenance.service
+    journalctl -u restic-backup.service -u 'restic-backup@*.service' -u restic-maintenance.service
     tail -f /var/log/restic/backup.log /var/log/restic/maintenance.log
 
 Or drive everything through the resticctl CLI (installed onto PATH):
     resticctl status
-    resticctl enable-backups
+    resticctl backup-all
     resticctl backup --manual
     resticctl maintenance
     resticctl verify --target /path/with/free/space

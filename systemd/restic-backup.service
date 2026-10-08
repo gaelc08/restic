@@ -1,0 +1,41 @@
+[Unit]
+Description=restic backup dispatch (starts one restic-backup@<share>.service per share)
+Documentation=https://restic.readthedocs.io/
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/restic/restic.env
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/restic/restic.env
+ExecStart=/opt/restic/bin/restic-backup-dispatch.sh
+
+# This unit only starts the per-share jobs (via `systemctl start
+# --no-block`) and exits - it never waits on them, so it always
+# finishes in a couple seconds regardless of how long any individual
+# share's backup takes. That matters: a Type=oneshot unit is only
+# "active" until its ExecStart process exits, and systemd refuses to
+# start a second instance of a unit that's still active - so if this
+# dispatcher itself did the backing up (like the old, single
+# sequential restic-backup.service used to), one slow share could
+# leave it "active" into the next day and silently skip that whole
+# day's backup for every other share too. Keeping the dispatcher
+# trivial means that failure mode can't happen here; each
+# restic-backup@<share>.service instance it starts is its own
+# independent unit, so a slow share only ever blocks its own next run.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=restic-backup-dispatch
+
+# Only needs to read /etc/restic (already readable under
+# ProtectSystem=full) and write its own log file - it doesn't touch
+# the restic cache/tmp dirs directly (the restic-backup@<share>.service
+# instances it starts do that, each under their own unit).
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/var/log/restic
+
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
