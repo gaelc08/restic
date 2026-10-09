@@ -29,6 +29,7 @@ install -m 0755 "${SCRIPT_DIR}/bin/restic-snapshots.sh"       /opt/restic/bin/re
 install -m 0755 "${SCRIPT_DIR}/bin/restic-forget.sh"          /opt/restic/bin/restic-forget.sh
 install -m 0755 "${SCRIPT_DIR}/bin/restic-verify.sh"          /opt/restic/bin/restic-verify.sh
 install -m 0755 "${SCRIPT_DIR}/bin/restic-report.sh"          /opt/restic/bin/restic-report.sh
+install -m 0755 "${SCRIPT_DIR}/bin/restic-add-share.sh"       /opt/restic/bin/restic-add-share.sh
 install -m 0644 "${SCRIPT_DIR}/bin/restic-common.sh"          /opt/restic/bin/restic-common.sh
 install -m 0755 "${SCRIPT_DIR}/bin/resticctl"                 /opt/restic/bin/resticctl
 
@@ -203,6 +204,7 @@ Or drive everything through the resticctl CLI (installed onto PATH):
     resticctl status
     resticctl backup-all
     resticctl backup --manual
+    resticctl add-share --type nfs --source <host:/export> --mount <path> --policy <name>
     resticctl maintenance
     resticctl verify --target /path/with/free/space
     resticctl report

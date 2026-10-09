@@ -9,6 +9,7 @@
 #   resticctl backup [--manual] [share-name-or-path]
 #   resticctl backup --background <share-name-or-path>
 #   resticctl backup-all
+#   resticctl add-share --type nfs|cifs --source <src> --mount <path> --policy <name> [...]
 #   resticctl maintenance
 #   resticctl list [restic snapshots flags...]
 #   resticctl delete [--yes] [--no-prune] <snapshot-id...>
@@ -139,6 +140,23 @@ Commands:
                                   also exactly what restic-backup.timer
                                   runs once daily.
 
+  add-share --type nfs --source <host:/export> --mount <path>
+            --policy <name> [--nconnect N] [--yes]
+  add-share --type cifs --source //<host>/<share> --mount <path>
+            --policy <name> --credentials <file> [--yes]
+                                  Provisions a new share end to end:
+                                  adds the mount to /etc/fstab, mounts
+                                  it, verifies the mount actually came
+                                  up (rolling fstab back if not), then
+                                  adds it to shares.conf with the given
+                                  retention policy. Nothing further
+                                  needed - the daily dispatcher picks
+                                  it up automatically. --options "..."
+                                  overrides the built-in NFS/CIFS mount
+                                  option defaults entirely, for
+                                  anything unusual. See
+                                  restic-add-share.sh's header comment.
+
   maintenance                    Apply each share's retention policy
                                   (forget), prune, and check.
 
@@ -224,6 +242,9 @@ case "$cmd" in
         ;;
     backup-all)
         exec "${SCRIPT_DIR}/restic-backup-dispatch.sh" "$@"
+        ;;
+    add-share)
+        exec "${SCRIPT_DIR}/restic-add-share.sh" "$@"
         ;;
     maintenance)
         exec "${SCRIPT_DIR}/restic-maintenance.sh" "$@"

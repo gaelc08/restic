@@ -25,6 +25,8 @@ installed:
 
 ```sh
 resticctl backup [--manual] [share-path]  # backup all shares, or just one
+resticctl backup-all            # start every share's backup now, in parallel, in the background
+resticctl add-share --type nfs|cifs --source <src> --mount <path> --policy <name>  # provision a new share, see below
 resticctl maintenance           # apply retention + prune + check
 resticctl list [flags...]       # list snapshots (restic snapshots flags)
 resticctl delete [flags...]     # remove snapshot(s), see below
@@ -128,6 +130,9 @@ underlying scripts directly, not through `resticctl`).
 - `jq` and `shuf` (coreutils) - used by `restic-snapshots.sh --latest-id`,
   required by `restic-verify.sh` and `restic-report.sh`, and by
   `resticctl status` to read a running backup's progress
+- `nfs-utils` (for `mount.nfs4`) and/or `cifs-utils` (for `mount.cifs`),
+  whichever share types you actually use - required by
+  `resticctl add-share`, which doesn't install them for you
 - `mail`/`sendmail` and/or `curl`, only if you enable email or webhook
   failure notifications (`RESTIC_NOTIFY_EMAIL` / `RESTIC_NOTIFY_WEBHOOK_URL`)
 
@@ -269,6 +274,67 @@ keep different histories, each must own its own snapshots that
 `restic-backup.sh` runs `restic backup <path>` once per share (see
 `bin/restic-common.sh` for the full explanation), rather than passing
 every share to a single combined `restic backup` call.
+
+### Adding a new share
+
+Adding a share normally means two separate things: mounting it
+(`/etc/fstab` + `mount`) and telling restic about it (`shares.conf`).
+`resticctl add-share` does both in one step, end to end, and rolls
+back cleanly if the mount doesn't actually come up:
+
+```sh
+# NFS
+resticctl add-share --type nfs \
+    --source 10.110.136.44:/presentation_copy \
+    --mount /mnt/svm-cs3-bnl-dev/presentation_copy \
+    --policy short
+
+# CIFS/SMB
+resticctl add-share --type cifs \
+    --source //10.110.136.43/c\$/myvolume \
+    --mount /mnt/SVMCIGOUVZ1001/myvolume \
+    --policy short \
+    --credentials /etc/smb-cred-fileshare
+```
+
+It validates everything *before* touching anything (the `--policy`
+name must already exist in `retention-policies.conf`, the mount point
+must not already be in `/etc/fstab` or `shares.conf`), shows you the
+exact two lines it's about to add and asks for confirmation (`--yes`
+to skip that, for scripted use), then: backs up `/etc/fstab`, appends
+the new line, `mount`s it, and checks with `mountpoint -q` that it
+actually came up. If it didn't, `/etc/fstab` is restored from that
+backup and nothing is added to `shares.conf` - you're never left with
+a share half-configured (mounted but not backed up, or the reverse).
+Once it succeeds, nothing else is needed: the next
+`restic-backup.timer` run picks up the new line in `shares.conf`
+automatically (or run `resticctl backup --background <share-name>` to
+back it up immediately instead of waiting).
+
+Default mount options (both match what's already proven on manny-01):
+```
+# NFS  (fstype nfs4)
+rw,_netdev,vers=4.2,hard,proto=tcp,timeo=600,retrans=2,sec=sys,rsize=262144,wsize=262144,nconnect=8
+
+# CIFS (fstype cifs)
+credentials=<file>,vers=3.1.1,seal,noserverino,_netdev
+```
+`--nconnect N` overrides the NFS connection count (default 8 - see
+below); `--options "..."` overrides the whole options string for
+either type, for anything unusual. `--credentials <file>` is required
+for `--type cifs` (there's no sensible default - it's a secrets file
+path) unless you pass `--options` yourself.
+
+**On `nconnect`:** more parallel TCP connections to the NFS server can
+meaningfully help throughput for large sequential transfers like a
+backup, but it's not "higher is always better" - each connection adds
+overhead, and you're bounded by both link speed and the server's own
+per-connection threading. `nconnect=8` is a solid default for most
+10/25GbE links; manny-01's existing NFS shares already use
+`nconnect=16` successfully, so if you've confirmed that's actually
+faster on this network, pass `--nconnect 16` to match them. Keep it
+consistent across shares on the same network path rather than mixing
+values without a measured reason to.
 
 ### Maintenance and `--max-repack-size 0`
 
