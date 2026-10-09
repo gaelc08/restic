@@ -2,10 +2,10 @@
 Description=Daily timer for restic backup dispatch (one service per share)
 
 [Timer]
-# Daily at 01:00 local time. restic-maintenance.timer fires at 00:00
-# (i.e. just before this, at the end of the previous day's cycle), so
-# under normal conditions it never overlaps this job; the lock in
-# bin/restic-common.sh (acquire_lock) is the actual guarantee.
+# Daily at 01:00 local time. restic-maintenance.timer fires at 23:00
+# the previous evening, so under normal conditions it never overlaps
+# this job; the lock in bin/restic-common.sh (acquire_lock) is the
+# actual guarantee.
 #
 # This timer only ever triggers the dispatcher (restic-backup.service,
 # which starts every restic-backup@<share>.service and exits within

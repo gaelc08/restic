@@ -75,7 +75,8 @@ underlying scripts directly, not through `resticctl`).
   `systemctl start --no-block restic-backup.service` to go through the
   timer's own unit) instead of waiting for 01:00.
 - **restic-maintenance.timer** fires **restic-maintenance.service**
-  daily at 00:00 (midnight, the last job of the day), which runs
+  daily at 23:00 (the last job of the day, 2 hours ahead of the 01:00
+  backup dispatch for extra margin), which runs
   `/opt/restic/bin/restic-maintenance.sh`: applies **each share's own
   retention policy** (`restic forget --tag scheduled --path <share>
   --keep-...`, once per share), then a single repository-wide `restic
@@ -599,7 +600,7 @@ size correctly, and reformats that as HTML.
 Unlike `restic-verify.sh`, this never touches archived pack data or
 takes the backup/maintenance lock - only local status files and fast
 metadata - so `restic-report.timer` (daily at 06:00, comfortably after
-the 00:00/01:00 maintenance/backup runs) is safe to enable:
+the 23:00/01:00 maintenance/backup runs) is safe to enable:
 
 ```sh
 systemctl enable --now restic-report.timer
