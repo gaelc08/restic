@@ -181,8 +181,7 @@ Commands:
                                   files, from restic's own --json
                                   status stream) or idle (with the last
                                   run's result and how long ago), plus
-                                  the same for maintenance and the last
-                                  recorded verify result.
+                                  the same for maintenance.
 
   help                           Show this help.
 
@@ -254,10 +253,10 @@ case "$cmd" in
         # secrets file, and nothing else from restic.env/shares.conf
         # should leak into this shell.
         env_file="${RESTIC_ENV_FILE:-/etc/restic/restic.env}"
-        read -r shares_file status_dir < <(
+        read -r shares_file status_dir backup_log < <(
             # shellcheck disable=SC1090
             [[ -r "$env_file" ]] && source "$env_file" >/dev/null 2>&1
-            echo "${SHARES_FILE:-/etc/restic/shares.conf} ${RESTIC_STATUS_DIR:-/var/log/restic/status}"
+            echo "${SHARES_FILE:-/etc/restic/shares.conf} ${RESTIC_STATUS_DIR:-/var/log/restic/status} ${BACKUP_LOG_FILE:-${LOG_DIR:-/var/log/restic}/backup.log}"
         )
 
         share_names=()
@@ -278,29 +277,54 @@ case "$cmd" in
                 json="$(backup_progress_json "$unit")"
                 if [[ -n "$json" ]]; then
                     pct="$(jq -r '(.percent_done * 100) | floor' <<<"$json" 2>/dev/null)"
+                    # restic's own percent_done/seconds_remaining can
+                    # briefly go haywire right near completion (it
+                    # revises its total-size estimate as it goes, so
+                    # percent_done can tip past 100%, and an
+                    # almost-zero remaining rate can blow up
+                    # seconds_remaining into a nonsense huge number) -
+                    # clamp/drop rather than print garbage.
+                    [[ "$pct" =~ ^[0-9]+$ ]] && ((pct > 100)) && pct=100
                     bdone="$(jq -r '.bytes_done' <<<"$json" 2>/dev/null)"
                     btotal="$(jq -r '.total_bytes' <<<"$json" 2>/dev/null)"
+                    [[ "$bdone" =~ ^[0-9]+$ && "$btotal" =~ ^[0-9]+$ ]] && ((bdone > btotal)) && bdone=$btotal
                     fdone="$(jq -r '.files_done' <<<"$json" 2>/dev/null)"
                     ftotal="$(jq -r '.total_files' <<<"$json" 2>/dev/null)"
+                    [[ "$fdone" =~ ^[0-9]+$ && "$ftotal" =~ ^[0-9]+$ ]] && ((fdone > ftotal)) && fdone=$ftotal
                     elapsed="$(jq -r '.seconds_elapsed' <<<"$json" 2>/dev/null)"
                     remaining="$(jq -r '.seconds_remaining // empty' <<<"$json" 2>/dev/null)"
                     errs="$(jq -r '.error_count // 0' <<<"$json" 2>/dev/null)"
                     line="${pct}%  $(format_bytes "$bdone")/$(format_bytes "$btotal")  ${fdone}/${ftotal} files  elapsed $(format_duration "$elapsed")"
-                    [[ -n "$remaining" ]] && line+="  eta $(format_duration "$remaining")"
+                    # Only trust an ETA under 7 days - anything beyond
+                    # that is the same near-completion estimate glitch,
+                    # not a real remaining time.
+                    [[ "$remaining" =~ ^[0-9]+$ ]] && ((remaining < 604800)) && line+="  eta $(format_duration "$remaining")"
                     [[ "$errs" =~ ^[0-9]+$ ]] && ((errs > 0)) && line+="  (${errs} errors)"
                     printf "  %-22s running   %s\n" "$name" "$line"
                 else
                     printf "  %-22s running   (no progress reported yet)\n" "$name"
                 fi
             else
-                exitcode="$(systemctl show "$unit" --property=ExecMainStatus --value 2>/dev/null)"
-                exittime="$(systemctl show "$unit" --property=ExecMainExitTimestamp --value 2>/dev/null)"
-                if [[ -z "$exittime" ]]; then
+                # Not systemctl show's ExecMainStatus/ExecMainExitTimestamp:
+                # systemd drops a finished, unreferenced template
+                # instance's state from memory (e.g. on the next
+                # daemon-reload, which every install.sh run triggers),
+                # long before anyone wants to check "did last night's
+                # run succeed" - this would wrongly show "never run"
+                # for a share that actually backed up fine hours ago.
+                # restic-backup.sh's own completion line in
+                # backup.log is what the script wrote itself and is
+                # already proven safe for the exact span we care about
+                # at the normal logrotate retention (90 days).
+                last_line="$(grep -E "share '${name}' backup (completed successfully|completed with warnings|FAILED)" "$backup_log" 2>/dev/null | tail -1)"
+                if [[ -z "$last_line" ]]; then
                     printf "  %-22s idle      never run\n" "$name"
                 else
+                    ts="$(sed -n 's/^\[\([^]]*\)\].*/\1/p' <<<"$last_line")"
                     result="ok"
-                    [[ "$exitcode" != "0" ]] && result="FAILED (exit ${exitcode})"
-                    printf "  %-22s idle      last: %-20s %s\n" "$name" "$result" "$(relative_time "$exittime")"
+                    [[ "$last_line" == *"completed with warnings"* ]] && result="warning"
+                    [[ "$last_line" == *"FAILED"* ]] && result="${last_line##*backup }"
+                    printf "  %-22s idle      last: %-20s %s\n" "$name" "$result" "$(relative_time "$ts")"
                 fi
             fi
         done
@@ -314,7 +338,7 @@ case "$cmd" in
         elif [[ -r "${status_dir}/maintenance.status" ]]; then
             # single-instance job (unlike backup, not split per share),
             # so its own status file is a reliable, already-written
-            # summary - no need to re-derive it from systemd.
+            # summary - no need to re-derive it from systemd or logs.
             status="$(grep '^STATUS=' "${status_dir}/maintenance.status" | cut -d= -f2-)"
             timestamp="$(grep '^TIMESTAMP=' "${status_dir}/maintenance.status" | cut -d= -f2-)"
             summary="$(grep '^SUMMARY=' "${status_dir}/maintenance.status" | cut -d= -f2-)"
@@ -322,20 +346,6 @@ case "$cmd" in
             echo "            ${summary}"
         else
             echo "  idle      no run recorded"
-        fi
-
-        echo
-        echo "=== Verify (manual, on-demand only) ==="
-        if [[ -r "${status_dir}/verify.status" ]]; then
-            status="$(grep '^STATUS=' "${status_dir}/verify.status" | cut -d= -f2-)"
-            timestamp="$(grep '^TIMESTAMP=' "${status_dir}/verify.status" | cut -d= -f2-)"
-            summary="$(grep '^SUMMARY=' "${status_dir}/verify.status" | cut -d= -f2-)"
-            label="ok"
-            [[ "$status" != "success" ]] && label="${status^^}"
-            printf "  last: %-20s %s\n" "$label" "$(relative_time "$timestamp")"
-            echo "  ${summary}"
-        else
-            echo "  no run recorded"
         fi
         ;;
     help|-h|--help)

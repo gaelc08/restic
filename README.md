@@ -614,16 +614,20 @@ resticctl status
 === Maintenance ===
   idle      last: success              9h ago
             restic maintenance on manny-01 completed successfully in 563s (4 share(s)).
-
-=== Verify (manual, on-demand only) ===
-  last: FAILURE              15d ago
-  restic restore verification on manny-01 FAILED for share(s): test (after 902s). See /var/log/restic/verify.log.
 ```
 
 The percent/bytes/files/eta for a running share comes straight from
 restic's own `--json` progress stream (`message_type: "status"`),
 read from that share's `restic-backup@<share>.service` journal - not
-re-derived or estimated. `error_count` (shown only when > 0) is
+re-derived or estimated (`percent_done`/`bytes_done`/`seconds_remaining`
+are clamped/dropped if restic's own near-completion estimate briefly
+overshoots - it revises its total-size estimate as it goes). An idle
+share's last result comes from its own completion line in
+`/var/log/restic/backup.log`, not from systemd's in-memory unit
+state - that state isn't kept forever (e.g. it's dropped on the next
+`daemon-reload`, which every `install.sh` run triggers), so relying on
+it would wrongly show "never run" for a share that actually finished
+hours earlier. `error_count` (shown only when > 0) is
 restic's own count of files it couldn't read during this run, same as
 in the final summary.
 
