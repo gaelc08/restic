@@ -31,7 +31,7 @@ resticctl delete [flags...]     # remove snapshot(s), see below
 resticctl verify --target <path> [share-path]  # prove backups are actually restorable, see below
 resticctl report                # email the daily status digest, see below
 resticctl version               # what commit is deployed
-resticctl status                # timer schedule + each service's last run/status
+resticctl status                # which shares are backing up now (with progress), which are idle
 resticctl help
 ```
 
@@ -125,8 +125,9 @@ underlying scripts directly, not through `resticctl`).
   and `-o s3.connections` / `-o s3.storage-class`)
 - `bash`, `systemd`, `logrotate`, `mountpoint`, `flock`, `timeout`
   (util-linux/coreutils, almost always already present)
-- `jq` and `shuf` (coreutils) - used by `restic-snapshots.sh --latest-id`
-  and required by `restic-verify.sh`
+- `jq` and `shuf` (coreutils) - used by `restic-snapshots.sh --latest-id`,
+  required by `restic-verify.sh` and `restic-report.sh`, and by
+  `resticctl status` to read a running backup's progress
 - `mail`/`sendmail` and/or `curl`, only if you enable email or webhook
   failure notifications (`RESTIC_NOTIFY_EMAIL` / `RESTIC_NOTIFY_WEBHOOK_URL`)
 
@@ -597,6 +598,37 @@ across), then run `install.sh` on the server as above.
 
 ## Operational checks
 
+The quickest "what's happening right now" check:
+
+```sh
+resticctl status
+```
+
+```
+=== Backups ===
+  presentation_copy      running   76%  32.2T/42.2T  29583755/44811700 files  elapsed 6h47m  eta 59m  (1192 errors)
+  edrop_arc_tmp          idle      last: ok                   8h ago
+  finance                idle      last: ok                   8h ago
+  hr                     idle      never run
+
+=== Maintenance ===
+  idle      last: success              9h ago
+            restic maintenance on manny-01 completed successfully in 563s (4 share(s)).
+
+=== Verify (manual, on-demand only) ===
+  last: FAILURE              15d ago
+  restic restore verification on manny-01 FAILED for share(s): test (after 902s). See /var/log/restic/verify.log.
+```
+
+The percent/bytes/files/eta for a running share comes straight from
+restic's own `--json` progress stream (`message_type: "status"`),
+read from that share's `restic-backup@<share>.service` journal - not
+re-derived or estimated. `error_count` (shown only when > 0) is
+restic's own count of files it couldn't read during this run, same as
+in the final summary.
+
+For the raw systemd/journal view instead:
+
 ```sh
 systemctl list-timers 'restic-*'                 # next scheduled runs
 systemctl status restic-backup.service           # dispatcher's last run
@@ -659,6 +691,23 @@ path (in either order relative to `--manual`):
 resticctl backup /mnt/share-finance
 resticctl backup --manual /mnt/share-finance
 ```
+
+**These run in the foreground, in this one process** - useful for
+watching the run live, but it blocks your shell until it's done, and
+Ctrl+C kills it for real (it's a direct child of this command, not a
+systemd job - unlike `systemctl start`/`backup-all` above, where
+Ctrl+C only stops you from *watching*, never the job itself). To
+start just one share in the background instead, going through systemd
+the same way `backup-all` does:
+
+```sh
+resticctl backup --background /mnt/share-finance
+```
+
+which is a shorthand for `systemctl start --no-block
+restic-backup@finance.service` - always tags the run `scheduled`
+(can't be combined with `--manual`, since that service's `ExecStart`
+has no way to pass it through).
 
 An unrelated share being missing or unmounted never blocks a
 single-share run - only the requested share's mount status is checked.

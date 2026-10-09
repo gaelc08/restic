@@ -122,6 +122,26 @@ install -m 0644 "${SCRIPT_DIR}/systemd/restic-maintenance.service" /etc/systemd/
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-maintenance.timer"   /etc/systemd/system/restic-maintenance.timer
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-report.service"      /etc/systemd/system/restic-report.service
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-report.timer"        /etc/systemd/system/restic-report.timer
+
+# restic-backup@.timer (one enabled instance per share, e.g.
+# restic-backup@finance.timer) is from the per-share-timer design this
+# version replaces with the restic-backup.timer/.service dispatcher -
+# `install`/`cp` only ever adds or overwrites files, it never deletes
+# ones no longer in this version's systemd/ directory, so an upgrade
+# from that design leaves these behind on disk (and still enabled)
+# unless we clean them up here.
+if [[ -e /etc/systemd/system/restic-backup@.timer ]]; then
+    echo "==> Removing the old per-share restic-backup@.timer (replaced by restic-backup.timer)"
+    shopt -s nullglob
+    for link in /etc/systemd/system/timers.target.wants/restic-backup@*.timer; do
+        unit="$(basename "$link")"
+        echo "    disabling ${unit}"
+        systemctl disable --now "$unit" 2>/dev/null || true
+    done
+    shopt -u nullglob
+    rm -f /etc/systemd/system/restic-backup@.timer
+fi
+
 systemctl daemon-reload
 # restic-verify.sh deliberately has no systemd unit and no timer - it
 # is a manual/on-demand tool only. A real Glacier/tape restore can
