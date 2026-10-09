@@ -27,6 +27,65 @@ set -uo pipefail
 SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" &>/dev/null && pwd)"
 
+# --- helpers for the `status` command --------------------------------
+#
+# relative_time <systemd-or-ISO8601 timestamp> -> "9h ago" / "15d ago"
+relative_time() {
+    local ts="$1" then_epoch now diff
+    [[ -z "$ts" ]] && { echo "unknown"; return; }
+    then_epoch="$(date -d "$ts" +%s 2>/dev/null)" || { echo "$ts"; return; }
+    now="$(date +%s)"
+    diff=$((now - then_epoch))
+    ((diff < 0)) && diff=0
+    if   ((diff < 60));    then echo "${diff}s ago"
+    elif ((diff < 3600));  then echo "$((diff / 60))m ago"
+    elif ((diff < 86400)); then echo "$((diff / 3600))h ago"
+    else                        echo "$((diff / 86400))d ago"
+    fi
+}
+
+# format_duration <seconds> -> "6h47m" / "59m" / "?"
+format_duration() {
+    local secs="$1" h m
+    [[ -z "$secs" || "$secs" == "null" ]] && { echo "?"; return; }
+    h=$((secs / 3600))
+    m=$(((secs % 3600) / 60))
+    if ((h > 0)); then printf '%dh%02dm\n' "$h" "$m"; else printf '%dm\n' "$m"; fi
+}
+
+# format_bytes <bytes> -> "33.0G" or "1.2T" / "?" - auto-scales to TiB
+# above 1024 GiB (these shares run tens of terabytes; a flat "G" unit
+# produces unreadable numbers like "32946.4G"). awk, not jq/bc, for
+# the float division (bash itself has no floating point).
+format_bytes() {
+    local bytes="$1"
+    [[ -z "$bytes" || "$bytes" == "null" ]] && { echo "?"; return; }
+    awk -v b="$bytes" 'BEGIN {
+        gib = b / 1073741824
+        if (gib >= 1024) printf "%.1fT", gib / 1024
+        else printf "%.1fG", gib
+    }'
+}
+
+# backup_progress_json <unit> -> the most recent restic --json "status"
+# line (message_type=="status": percent_done, bytes_done, total_bytes,
+# files_done, total_files, seconds_elapsed, seconds_remaining,
+# error_count - see restic's JSON output docs) for that systemd unit,
+# or nothing if none found in its recent journal. -n 500 bounds the
+# journal read; restic emits a status line roughly once a second, so
+# the tail of a long-running backup's journal almost always has one
+# within the last 500 lines even once interleaved with this script's
+# own log_info/log_error lines (which is why we grep down to
+# JSON-looking lines first - jq errors out on the whole stream
+# otherwise, it doesn't just skip a bad line).
+backup_progress_json() {
+    local unit="$1"
+    journalctl -u "$unit" -o cat -n 500 --no-pager 2>/dev/null \
+        | grep -o '{.*}' 2>/dev/null \
+        | jq -c 'select(.message_type == "status")' 2>/dev/null \
+        | tail -1
+}
+
 usage() {
     cat <<'EOF'
 Usage: resticctl <command> [args...]
@@ -117,9 +176,13 @@ Commands:
 
   version                        Show the deployed commit (VERSION file).
 
-  status                         Show timer schedule, each service's
-                                  last run, and the last recorded status
-                                  of every job.
+  status                         Show, per share: running now (with
+                                  live progress - percent, bytes,
+                                  files, from restic's own --json
+                                  status stream) or idle (with the last
+                                  run's result and how long ago), plus
+                                  the same for maintenance and the last
+                                  recorded verify result.
 
   help                           Show this help.
 
@@ -187,36 +250,92 @@ case "$cmd" in
         fi
         ;;
     status)
-        systemctl list-timers 'restic-*' --no-pager 2>/dev/null
-        echo
-        systemctl status restic-backup.service --no-pager -n 5 2>/dev/null
-        echo
-        systemctl status 'restic-backup@*.service' --no-pager -n 5 2>/dev/null
-        echo
-        systemctl status restic-maintenance.service --no-pager -n 5 2>/dev/null
-        echo
-        # Same RESTIC_STATUS_DIR the jobs write to (restic-common.sh):
-        # read from restic.env only, in a subshell - status must not need
-        # the secrets file, and nothing else from restic.env should leak
-        # into this shell.
-        status_dir="$(
-            env_file="${RESTIC_ENV_FILE:-/etc/restic/restic.env}"
+        # Config read once, in a subshell - status must not need the
+        # secrets file, and nothing else from restic.env/shares.conf
+        # should leak into this shell.
+        env_file="${RESTIC_ENV_FILE:-/etc/restic/restic.env}"
+        read -r shares_file status_dir < <(
             # shellcheck disable=SC1090
             [[ -r "$env_file" ]] && source "$env_file" >/dev/null 2>&1
-            echo "${RESTIC_STATUS_DIR:-/var/log/restic/status}"
-        )"
-        echo "-- last recorded run status (${status_dir}) --"
-        shopt -s nullglob
-        status_files=("${status_dir}"/*.status)
-        shopt -u nullglob
-        if [[ ${#status_files[@]} -eq 0 ]]; then
-            echo "(none yet)"
+            echo "${SHARES_FILE:-/etc/restic/shares.conf} ${RESTIC_STATUS_DIR:-/var/log/restic/status}"
+        )
+
+        share_names=()
+        if [[ -r "$shares_file" ]]; then
+            while read -r path; do
+                share_names+=("$(basename "$path")")
+            done < <(awk '!/^#/ && NF {print $1}' "$shares_file")
+        fi
+
+        echo "=== Backups ==="
+        if [[ ${#share_names[@]} -eq 0 ]]; then
+            echo "  (cannot read SHARES_FILE: $shares_file)"
+        fi
+        for name in "${share_names[@]}"; do
+            unit="restic-backup@${name}.service"
+            state="$(systemctl show "$unit" --property=ActiveState --value 2>/dev/null)"
+            if [[ "$state" == "activating" || "$state" == "active" ]]; then
+                json="$(backup_progress_json "$unit")"
+                if [[ -n "$json" ]]; then
+                    pct="$(jq -r '(.percent_done * 100) | floor' <<<"$json" 2>/dev/null)"
+                    bdone="$(jq -r '.bytes_done' <<<"$json" 2>/dev/null)"
+                    btotal="$(jq -r '.total_bytes' <<<"$json" 2>/dev/null)"
+                    fdone="$(jq -r '.files_done' <<<"$json" 2>/dev/null)"
+                    ftotal="$(jq -r '.total_files' <<<"$json" 2>/dev/null)"
+                    elapsed="$(jq -r '.seconds_elapsed' <<<"$json" 2>/dev/null)"
+                    remaining="$(jq -r '.seconds_remaining // empty' <<<"$json" 2>/dev/null)"
+                    errs="$(jq -r '.error_count // 0' <<<"$json" 2>/dev/null)"
+                    line="${pct}%  $(format_bytes "$bdone")/$(format_bytes "$btotal")  ${fdone}/${ftotal} files  elapsed $(format_duration "$elapsed")"
+                    [[ -n "$remaining" ]] && line+="  eta $(format_duration "$remaining")"
+                    [[ "$errs" =~ ^[0-9]+$ ]] && ((errs > 0)) && line+="  (${errs} errors)"
+                    printf "  %-22s running   %s\n" "$name" "$line"
+                else
+                    printf "  %-22s running   (no progress reported yet)\n" "$name"
+                fi
+            else
+                exitcode="$(systemctl show "$unit" --property=ExecMainStatus --value 2>/dev/null)"
+                exittime="$(systemctl show "$unit" --property=ExecMainExitTimestamp --value 2>/dev/null)"
+                if [[ -z "$exittime" ]]; then
+                    printf "  %-22s idle      never run\n" "$name"
+                else
+                    result="ok"
+                    [[ "$exitcode" != "0" ]] && result="FAILED (exit ${exitcode})"
+                    printf "  %-22s idle      last: %-20s %s\n" "$name" "$result" "$(relative_time "$exittime")"
+                fi
+            fi
+        done
+
+        echo
+        echo "=== Maintenance ==="
+        maint_state="$(systemctl show restic-maintenance.service --property=ActiveState --value 2>/dev/null)"
+        if [[ "$maint_state" == "activating" || "$maint_state" == "active" ]]; then
+            since="$(systemctl show restic-maintenance.service --property=ActiveEnterTimestamp --value 2>/dev/null)"
+            echo "  running   since $(relative_time "$since")"
+        elif [[ -r "${status_dir}/maintenance.status" ]]; then
+            # single-instance job (unlike backup, not split per share),
+            # so its own status file is a reliable, already-written
+            # summary - no need to re-derive it from systemd.
+            status="$(grep '^STATUS=' "${status_dir}/maintenance.status" | cut -d= -f2-)"
+            timestamp="$(grep '^TIMESTAMP=' "${status_dir}/maintenance.status" | cut -d= -f2-)"
+            summary="$(grep '^SUMMARY=' "${status_dir}/maintenance.status" | cut -d= -f2-)"
+            printf "  idle      last: %-20s %s\n" "${status:-unknown}" "$(relative_time "$timestamp")"
+            echo "            ${summary}"
         else
-            for f in "${status_files[@]}"; do
-                echo "[$f]"
-                cat "$f"
-                echo
-            done
+            echo "  idle      no run recorded"
+        fi
+
+        echo
+        echo "=== Verify (manual, on-demand only) ==="
+        if [[ -r "${status_dir}/verify.status" ]]; then
+            status="$(grep '^STATUS=' "${status_dir}/verify.status" | cut -d= -f2-)"
+            timestamp="$(grep '^TIMESTAMP=' "${status_dir}/verify.status" | cut -d= -f2-)"
+            summary="$(grep '^SUMMARY=' "${status_dir}/verify.status" | cut -d= -f2-)"
+            label="ok"
+            [[ "$status" != "success" ]] && label="${status^^}"
+            printf "  last: %-20s %s\n" "$label" "$(relative_time "$timestamp")"
+            echo "  ${summary}"
+        else
+            echo "  no run recorded"
         fi
         ;;
     help|-h|--help)
