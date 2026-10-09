@@ -25,6 +25,8 @@ installed:
 
 ```sh
 resticctl backup [--manual] [share-path]  # backup all shares, or just one
+resticctl backup-all            # start every share's backup now, in parallel, in the background
+resticctl add-share --type nfs|cifs --source <src> --mount <path> --policy <name>  # provision a new share, see below
 resticctl maintenance           # apply retention + prune + check
 resticctl list [flags...]       # list snapshots (restic snapshots flags)
 resticctl delete [flags...]     # remove snapshot(s), see below
@@ -73,7 +75,8 @@ underlying scripts directly, not through `resticctl`).
   `systemctl start --no-block restic-backup.service` to go through the
   timer's own unit) instead of waiting for 01:00.
 - **restic-maintenance.timer** fires **restic-maintenance.service**
-  daily at 00:00 (midnight, the last job of the day), which runs
+  daily at 23:00 (the last job of the day, 2 hours ahead of the 01:00
+  backup dispatch for extra margin), which runs
   `/opt/restic/bin/restic-maintenance.sh`: applies **each share's own
   retention policy** (`restic forget --tag scheduled --path <share>
   --keep-...`, once per share), then a single repository-wide `restic
@@ -128,6 +131,9 @@ underlying scripts directly, not through `resticctl`).
 - `jq` and `shuf` (coreutils) - used by `restic-snapshots.sh --latest-id`,
   required by `restic-verify.sh` and `restic-report.sh`, and by
   `resticctl status` to read a running backup's progress
+- `nfs-utils` (for `mount.nfs4`) and/or `cifs-utils` (for `mount.cifs`),
+  whichever share types you actually use - required by
+  `resticctl add-share`, which doesn't install them for you
 - `mail`/`sendmail` and/or `curl`, only if you enable email or webhook
   failure notifications (`RESTIC_NOTIFY_EMAIL` / `RESTIC_NOTIFY_WEBHOOK_URL`)
 
@@ -269,6 +275,77 @@ keep different histories, each must own its own snapshots that
 `restic-backup.sh` runs `restic backup <path>` once per share (see
 `bin/restic-common.sh` for the full explanation), rather than passing
 every share to a single combined `restic backup` call.
+
+### Adding a new share
+
+Adding a share normally means two separate things: mounting it
+(`/etc/fstab` + `mount`) and telling restic about it (`shares.conf`).
+`resticctl add-share` does both in one step, end to end, and rolls
+back cleanly if the mount doesn't actually come up:
+
+```sh
+# NFS
+resticctl add-share --type nfs \
+    --source 10.110.136.44:/presentation_copy \
+    --mount /mnt/svm-cs3-bnl-dev/presentation_copy \
+    --policy short
+
+# CIFS/SMB
+resticctl add-share --type cifs \
+    --source //10.110.136.43/c\$/myvolume \
+    --mount /mnt/SVMCIGOUVZ1001/myvolume \
+    --policy short \
+    --credentials /etc/smb-cred-fileshare
+```
+
+It validates everything *before* touching anything (the `--policy`
+name must already exist in `retention-policies.conf`, the mount point
+must not already be in `/etc/fstab` or `shares.conf`), shows you the
+exact two lines it's about to add and asks for confirmation (`--yes`
+to skip that, for scripted use), then: backs up `/etc/fstab`, appends
+the new line, `mount`s it, and checks with `mountpoint -q` that it
+actually came up. If it didn't, `/etc/fstab` is restored from that
+backup and nothing is added to `shares.conf` - you're never left with
+a share half-configured (mounted but not backed up, or the reverse).
+Once it succeeds, nothing else is needed: the next
+`restic-backup.timer` run picks up the new line in `shares.conf`
+automatically (or run `resticctl backup --background <share-name>` to
+back it up immediately instead of waiting).
+
+Default mount options (both match what's already proven on manny-01):
+```
+# NFS  (fstype nfs4)
+rw,_netdev,vers=4.2,hard,proto=tcp,timeo=600,retrans=2,sec=sys,rsize=262144,wsize=262144,nconnect=<RESTIC_READ_CONCURRENCY>
+
+# CIFS (fstype cifs)
+credentials=<file>,vers=3.1.1,seal,noserverino,_netdev
+```
+`--nconnect N` overrides the NFS connection count (default: whatever
+`RESTIC_READ_CONCURRENCY` is currently set to in `restic.env` - see
+below and "Configuration reference" below; the shipped example
+defaults that to 4, manny-01 currently runs it at 16); `--options
+"..."` overrides the whole options string for either type, for
+anything unusual. `--credentials <file>` is required for `--type cifs`
+(there's no sensible default - it's a secrets file path) unless you
+pass `--options` yourself.
+
+**On `nconnect`:** more parallel TCP connections to the NFS server can
+meaningfully help throughput for large sequential transfers like a
+backup, but it's not "higher is always better" - each connection adds
+overhead, and you're bounded by both link speed and the server's own
+per-connection threading. The default here is deliberately tied to
+`RESTIC_READ_CONCURRENCY` rather than a generic rule of thumb: restic
+reads that many files concurrently during backup, and each concurrent
+read becomes an NFS RPC call that the client spreads across
+`nconnect`'s TCP connections - fewer connections than concurrent reads
+means some of those reads queue up behind each other on the same
+connection instead of actually running in parallel, leaving some of
+that read concurrency unable to help. If you change
+`RESTIC_READ_CONCURRENCY`, new shares pick up the new value
+automatically (existing shares need their fstab line and
+`mount -o remount` updated by hand). Keep it consistent across shares
+on the same network path rather than mixing values without a measured
+reason to.
 
 ### Maintenance and `--max-repack-size 0`
 
@@ -533,7 +610,7 @@ size correctly, and reformats that as HTML.
 Unlike `restic-verify.sh`, this never touches archived pack data or
 takes the backup/maintenance lock - only local status files and fast
 metadata - so `restic-report.timer` (daily at 06:00, comfortably after
-the 00:00/01:00 maintenance/backup runs) is safe to enable:
+the 23:00/01:00 maintenance/backup runs) is safe to enable:
 
 ```sh
 systemctl enable --now restic-report.timer
