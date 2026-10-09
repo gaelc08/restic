@@ -45,7 +45,17 @@ Usage:
 EOF
 }
 
-TYPE="" SOURCE="" MOUNT_POINT="" POLICY="" NCONNECT="8" CREDENTIALS="" RAW_OPTIONS="" ASSUME_YES=0
+# Default matches RESTIC_READ_CONCURRENCY, already loaded from
+# restic.env by restic-common.sh above (default 4 in
+# config/restic.env.example, but this host's actual value - whatever
+# it is - wins, since that's a shell variable, not a literal) rather
+# than a generic "N is fine for most links" number: restic reads that
+# many files concurrently during backup, and each concurrent read
+# becomes an NFS RPC call that the client spreads across nconnect's
+# TCP connections - fewer connections than concurrent reads means some
+# of those reads queue up behind each other on the same connection
+# instead of actually running in parallel.
+TYPE="" SOURCE="" MOUNT_POINT="" POLICY="" NCONNECT="$RESTIC_READ_CONCURRENCY" CREDENTIALS="" RAW_OPTIONS="" ASSUME_YES=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in

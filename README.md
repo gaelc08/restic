@@ -315,27 +315,37 @@ back it up immediately instead of waiting).
 Default mount options (both match what's already proven on manny-01):
 ```
 # NFS  (fstype nfs4)
-rw,_netdev,vers=4.2,hard,proto=tcp,timeo=600,retrans=2,sec=sys,rsize=262144,wsize=262144,nconnect=8
+rw,_netdev,vers=4.2,hard,proto=tcp,timeo=600,retrans=2,sec=sys,rsize=262144,wsize=262144,nconnect=<RESTIC_READ_CONCURRENCY>
 
 # CIFS (fstype cifs)
 credentials=<file>,vers=3.1.1,seal,noserverino,_netdev
 ```
-`--nconnect N` overrides the NFS connection count (default 8 - see
-below); `--options "..."` overrides the whole options string for
-either type, for anything unusual. `--credentials <file>` is required
-for `--type cifs` (there's no sensible default - it's a secrets file
-path) unless you pass `--options` yourself.
+`--nconnect N` overrides the NFS connection count (default: whatever
+`RESTIC_READ_CONCURRENCY` is currently set to in `restic.env` - see
+below and "Configuration reference" below; the shipped example
+defaults that to 4, manny-01 currently runs it at 16); `--options
+"..."` overrides the whole options string for either type, for
+anything unusual. `--credentials <file>` is required for `--type cifs`
+(there's no sensible default - it's a secrets file path) unless you
+pass `--options` yourself.
 
 **On `nconnect`:** more parallel TCP connections to the NFS server can
 meaningfully help throughput for large sequential transfers like a
 backup, but it's not "higher is always better" - each connection adds
 overhead, and you're bounded by both link speed and the server's own
-per-connection threading. `nconnect=8` is a solid default for most
-10/25GbE links; manny-01's existing NFS shares already use
-`nconnect=16` successfully, so if you've confirmed that's actually
-faster on this network, pass `--nconnect 16` to match them. Keep it
-consistent across shares on the same network path rather than mixing
-values without a measured reason to.
+per-connection threading. The default here is deliberately tied to
+`RESTIC_READ_CONCURRENCY` rather than a generic rule of thumb: restic
+reads that many files concurrently during backup, and each concurrent
+read becomes an NFS RPC call that the client spreads across
+`nconnect`'s TCP connections - fewer connections than concurrent reads
+means some of those reads queue up behind each other on the same
+connection instead of actually running in parallel, leaving some of
+that read concurrency unable to help. If you change
+`RESTIC_READ_CONCURRENCY`, new shares pick up the new value
+automatically (existing shares need their fstab line and
+`mount -o remount` updated by hand). Keep it consistent across shares
+on the same network path rather than mixing values without a measured
+reason to.
 
 ### Maintenance and `--max-repack-size 0`
 
