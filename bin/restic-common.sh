@@ -35,6 +35,7 @@ RESTIC_S3_STORAGE_CLASS="${RESTIC_S3_STORAGE_CLASS:-GLACIER}"
 RESTIC_JSON_LOG="${RESTIC_JSON_LOG:-true}"
 REQUIRE_MOUNTED="${REQUIRE_MOUNTED:-true}"
 RESTIC_LOCK_FILE="${RESTIC_LOCK_FILE:-/run/restic/restic.lock}"
+RESTIC_BACKUP_MAX_PARALLEL="${RESTIC_BACKUP_MAX_PARALLEL:-2}"
 RESTIC_NOTIFY_ON="${RESTIC_NOTIFY_ON:-failure}"
 RESTIC_STATUS_DIR="${RESTIC_STATUS_DIR:-/var/log/restic/status}"
 # Display name/address emails are sent from. Without this, the local
@@ -263,6 +264,57 @@ acquire_lock() {
     else
         flock -w "$timeout" "$flag" "$RESTIC_LOCK_FD"
     fi
+}
+
+# acquire_backup_slot - bounds how many restic-backup.sh invocations
+# actually run `restic backup` (the heavy part) at the same time,
+# regardless of how many restic-backup@<share>.service instances were
+# started at once.
+#
+# Why this exists: restic-backup@.service instances are deliberately
+# started in parallel (by restic-backup-dispatch.sh, or
+# resticctl backup-all) - that's the whole point, a slow share should
+# never block another share's run. But each concurrent `restic backup`
+# process can use several GB to tens of GB of memory (scales with
+# RESTIC_READ_CONCURRENCY, pack buffers, the in-memory tree for that
+# share), and with enough shares actually running their backup at the
+# same moment, that adds up far faster than the host has RAM for -
+# this is exactly what caused an OOM and a reboot on manny-01 with
+# every share dispatched at once. RESTIC_BACKUP_MAX_PARALLEL (default
+# 2) caps how many run concurrently; anything beyond that waits here
+# instead, still "started" (its systemd unit is active) but blocked
+# before the expensive part.
+#
+# Implemented as RESTIC_BACKUP_MAX_PARALLEL named lock files ("slots")
+# under the same directory as RESTIC_LOCK_FILE: each call races to grab
+# any one free slot (one non-blocking flock attempt per slot, looping
+# over the whole set, then sleeping and retrying the whole set if none
+# were free) and holds it for the rest of the process's lifetime, same
+# idiom as acquire_lock() above. Polling rather than a single blocking
+# call because there's no single fd to block on when "any one of N"
+# will do; 30s of added latency before a queued backup starts is
+# nothing next to backup durations measured in hours.
+acquire_backup_slot() {
+    local max="$RESTIC_BACKUP_MAX_PARALLEL"
+    local slot_dir
+    slot_dir="$(dirname "$RESTIC_LOCK_FILE")"
+
+    local slot logged_wait=0
+    while true; do
+        for ((slot = 1; slot <= max; slot++)); do
+            exec {RESTIC_SLOT_FD}>"${slot_dir}/backup-slot-${slot}.lock"
+            if flock -n "$RESTIC_SLOT_FD"; then
+                log_info "acquired backup concurrency slot ${slot}/${max}"
+                return 0
+            fi
+            exec {RESTIC_SLOT_FD}>&-
+        done
+        if [[ $logged_wait -eq 0 ]]; then
+            log_info "all ${max} backup concurrency slot(s) busy - waiting for one to free up (RESTIC_BACKUP_MAX_PARALLEL=${max})"
+            logged_wait=1
+        fi
+        sleep 30
+    done
 }
 
 # --- retention policies + per-share config --------------------------------

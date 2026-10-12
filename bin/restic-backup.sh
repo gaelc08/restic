@@ -24,6 +24,15 @@
 # means a slow share only ever blocks its own next run, never anyone
 # else's.
 #
+# Being started in parallel is not the same as actually running
+# `restic backup` in parallel without limit, though:
+# acquire_backup_slot() (restic-common.sh) bounds how many instances
+# are doing that memory-heavy part at once to
+# RESTIC_BACKUP_MAX_PARALLEL, queuing the rest - every share being
+# dispatched at the same moment previously caused an OOM (and a
+# reboot) on manny-01, since several concurrent multi-GB `restic
+# backup` processes add up to more memory than the host actually has.
+#
 # Exit codes: 0 if every requested share backed up cleanly, 3 if every
 # share succeeded but at least one completed with restic's own "some
 # source files could not be read" warning (its exit code 3), 1 if any
@@ -114,6 +123,17 @@ if ! acquire_lock "$RESTIC_BACKUP_LOCK_TIMEOUT" shared; then
     exit 1
 fi
 log_info "acquired lock $RESTIC_LOCK_FILE"
+
+# Once per process, before the loop below - not once per share. For
+# the normal one-share-per-systemd-instance case that loop only ever
+# has one entry anyway, but for an ad-hoc no-argument run (every share
+# sequentially in this one process) only one `restic backup` is ever
+# actually running at a time regardless of how many shares it loops
+# over, so it should only ever hold one concurrency slot for its whole
+# duration - not grab a fresh one on every iteration without releasing
+# the last (which would both leak slots and let one sequential run
+# starve genuinely parallel ones).
+acquire_backup_slot
 
 FAILED=0
 WARNED=0
