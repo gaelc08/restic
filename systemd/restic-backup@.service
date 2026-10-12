@@ -14,6 +14,33 @@ Type=oneshot
 EnvironmentFile=/etc/restic/restic.env
 ExecStart=/opt/restic/bin/restic-backup.sh %i
 
+# All restic-backup@<share> instances share this slice (see
+# systemd/restic-backup.slice), which caps their *combined* memory -
+# this directive instead caps what ONE instance alone can use.
+# RESTIC_BACKUP_MAX_PARALLEL (restic.env) bounds how many instances
+# run `restic backup` at once, which protects against several
+# moderate-sized backups adding up to too much memory together - it
+# does nothing if a single share's backup is, by itself, big enough to
+# exhaust the host (observed on manny-01: one share alone peaked at
+# 21.5G). These two MemoryHigh/MemoryMax values are that second,
+# independent safety net: past MemoryHigh the kernel throttles/
+# reclaims this cgroup instead of letting it grow further; past
+# MemoryMax the kernel's cgroup-aware OOM killer kills processes
+# *inside this cgroup only* - this specific backup fails, instead of
+# the whole host OOMing and (as actually happened) rebooting.
+#
+# Sized for a 32G host (manny-01, as of 2026-10): ~4G reserved for the
+# OS and everything else, the rest split so one runaway backup can't
+# take the whole budget. If the host gets more RAM, or you confirm
+# (via `systemctl status restic-backup@<share>.service` while it runs,
+# which shows current/peak `Memory:`) that shares need more headroom,
+# raise both here (and in restic-backup.slice to match) and redeploy -
+# or `systemctl edit restic-backup@.service` for a quick local
+# override without waiting on that.
+MemoryHigh=24G
+MemoryMax=28G
+Slice=restic-backup.slice
+
 # Run as a low-priority, low-io-priority background job so it doesn't
 # starve interactive workloads on the host.
 Nice=10
