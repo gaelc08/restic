@@ -35,7 +35,10 @@ RESTIC_S3_STORAGE_CLASS="${RESTIC_S3_STORAGE_CLASS:-GLACIER}"
 RESTIC_JSON_LOG="${RESTIC_JSON_LOG:-true}"
 REQUIRE_MOUNTED="${REQUIRE_MOUNTED:-true}"
 RESTIC_LOCK_FILE="${RESTIC_LOCK_FILE:-/run/restic/restic.lock}"
-RESTIC_BACKUP_MAX_PARALLEL="${RESTIC_BACKUP_MAX_PARALLEL:-1}"
+# 4 matches the systemd MemoryHigh/MemoryMax sized for a 64G host (see
+# restic-backup@.service / restic-backup.slice) - keep this fallback
+# and those unit files' limits sized together.
+RESTIC_BACKUP_MAX_PARALLEL="${RESTIC_BACKUP_MAX_PARALLEL:-4}"
 RESTIC_NOTIFY_ON="${RESTIC_NOTIFY_ON:-failure}"
 RESTIC_STATUS_DIR="${RESTIC_STATUS_DIR:-/var/log/restic/status}"
 # Display name/address emails are sent from. Without this, the local
@@ -281,9 +284,11 @@ acquire_lock() {
 # same moment, that adds up far faster than the host has RAM for -
 # this is exactly what caused an OOM and a reboot on manny-01 with
 # every share dispatched at once. RESTIC_BACKUP_MAX_PARALLEL (default
-# 2) caps how many run concurrently; anything beyond that waits here
-# instead, still "started" (its systemd unit is active) but blocked
-# before the expensive part.
+# 4, sized together with the MemoryHigh/MemoryMax in
+# restic-backup@.service / restic-backup.slice for a 64G host) caps
+# how many run concurrently; anything beyond that waits here instead,
+# still "started" (its systemd unit is active) but blocked before the
+# expensive part.
 #
 # Implemented as RESTIC_BACKUP_MAX_PARALLEL named lock files ("slots")
 # under the same directory as RESTIC_LOCK_FILE: each call races to grab
