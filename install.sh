@@ -119,6 +119,14 @@ echo "==> Installing systemd units"
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-backup.service"      /etc/systemd/system/restic-backup.service
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-backup.timer"        /etc/systemd/system/restic-backup.timer
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-backup@.service"     /etc/systemd/system/restic-backup@.service
+# restic-backup.slice caps the *combined* memory of every currently
+# running restic-backup@<share> instance (each joins it explicitly,
+# via Slice= in restic-backup@.service) - a backstop against several
+# backups adding up to more memory than the host has, independent of
+# RESTIC_BACKUP_MAX_PARALLEL (restic.env) actually being set correctly
+# for this host's RAM. See the MemoryHigh/MemoryMax comment in
+# restic-backup@.service - keep both files' values in sync.
+install -m 0644 "${SCRIPT_DIR}/systemd/restic-backup.slice"        /etc/systemd/system/restic-backup.slice
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-maintenance.service" /etc/systemd/system/restic-maintenance.service
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-maintenance.timer"   /etc/systemd/system/restic-maintenance.timer
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-report.service"      /etc/systemd/system/restic-report.service

@@ -1,0 +1,28 @@
+[Unit]
+Description=Combined resource limits for all restic-backup@<share> instances
+
+# Every restic-backup@<share>.service instance joins this slice
+# (Slice=restic-backup.slice in that unit) explicitly, rather than
+# relying on systemd's own auto-derived slice-per-template naming -
+# easier to reason about, and this file is the one place that actually
+# controls it either way.
+#
+# This caps the *combined* memory of every currently-running instance,
+# on top of the per-instance MemoryHigh/MemoryMax in
+# restic-backup@.service: RESTIC_BACKUP_MAX_PARALLEL (restic.env)
+# already limits how many run `restic backup` at once, but that's a
+# count, not a memory budget - this is the actual memory backstop for
+# whatever that count turns out to add up to, so a config mismatch
+# between the two (e.g. RESTIC_BACKUP_MAX_PARALLEL raised without
+# confirming shares are small enough for that) still can't take down
+# the whole host, only this slice's own processes.
+#
+# Same 64G-host sizing note as restic-backup@.service's own
+# MemoryHigh/MemoryMax - keep both in sync when you adjust either.
+# IMPORTANT: do not deploy this (paired with
+# RESTIC_BACKUP_MAX_PARALLEL=4) on a host that doesn't actually have
+# 64G yet - see the warning in restic-backup@.service.
+
+[Slice]
+MemoryHigh=40G
+MemoryMax=48G

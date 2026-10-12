@@ -98,6 +98,42 @@ underlying scripts directly, not through `resticctl`).
     waits up to `RESTIC_BACKUP_LOCK_TIMEOUT` seconds (default 300) for
     the lock, then fails loudly (non-zero exit, logged) if maintenance
     still hasn't released it.
+- **Every share is *started* at once, but only `RESTIC_BACKUP_MAX_PARALLEL`
+  of them actually run `restic backup` at the same time** (default 4, sized for
+  manny-01's planned 64G) -
+  this is a separate, memory-driven limit from the shared/exclusive
+  lock above, not a restic or systemd restriction. Each concurrent
+  `restic backup` process can use several GB to tens of GB of RAM
+  depending on `RESTIC_READ_CONCURRENCY`, pack buffers, and the
+  share's own size; dispatching every share at once (correctly, by
+  design) previously meant every one of them trying to actually run
+  at the same moment too, which added up to more memory than the host
+  had and caused an OOM (and a reboot) on manny-01. `acquire_backup_slot()`
+  in `bin/restic-common.sh` bounds this: any instance beyond the limit
+  waits (polling every 30s, logged once) until one of the running
+  backups finishes and frees a slot. Size `RESTIC_BACKUP_MAX_PARALLEL`
+  to the host's actual available RAM divided by the peak memory you've
+  observed for one `restic backup` (`systemctl status
+  restic-backup@<share>.service` while it's running shows `Memory:`) -
+  not to the number of shares, which has nothing to do with how much
+  RAM the host has.
+  **This bounds a *count*, not a memory budget - it does nothing if a
+  single share's backup is, by itself, big enough to exhaust the
+  host** (manny-01's original incident happened at only 8G of RAM, where
+  one large share's backup alone was enough). For that, `restic-backup@.service`
+  sets per-instance `MemoryHigh=12G`/`MemoryMax=16G`, and `restic-backup.slice`
+  (which every instance explicitly joins) sets `MemoryHigh=40G`/`MemoryMax=48G`
+  as a cap on their *combined* memory - past `MemoryHigh` the kernel throttles/
+  reclaims; past `MemoryMax` the kernel's cgroup-aware OOM killer kills
+  only the processes in that cgroup, so one backup (or several
+  together) failing can't take the whole host down with it. These
+  values are sized together with `RESTIC_BACKUP_MAX_PARALLEL=4` for a
+  64G host - **do not raise `RESTIC_BACKUP_MAX_PARALLEL` past what
+  the current unit files' memory limits budget for**, and if the host
+  is still at less RAM than these values assume, lower
+  `RESTIC_BACKUP_MAX_PARALLEL` back to 1 and shrink both unit files'
+  limits to match before enabling backups. Update both unit files'
+  values together whenever the host's RAM changes.
 - All scripts source `/etc/restic/restic.env` (and
   `/etc/restic/secrets.env`, chmod 600, holding the repo password and
   AWS credentials together) for configuration, and log every run to
@@ -205,6 +241,7 @@ Then:
 | `RESTIC_RUN_CHECK` | run metadata-only `restic check` after prune |
 | `RESTIC_LOCK_FILE` | lock file backups hold in shared mode (parallel with each other) and maintenance holds in exclusive mode (never alongside a backup) |
 | `RESTIC_BACKUP_LOCK_TIMEOUT` | seconds backup waits for the lock before failing |
+| `RESTIC_BACKUP_MAX_PARALLEL` | how many shares actually run `restic backup` at once (default 4, sized for a 64G host) - see below |
 | `LOG_DIR`, `*_LOG_FILE` | log locations |
 | `RESTIC_JSON_LOG` | emit `restic backup --json` progress into the log |
 

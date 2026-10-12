@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Starts one restic-backup@<share>.service instance per share
 # currently in shares.conf, with --no-block, then exits - it does not
-# wait for any of them to finish.
+# wait for any of them to finish. "Started" only means systemd has
+# queued the unit, not that its `restic backup` is actually running
+# yet: restic-backup.sh itself (acquire_backup_slot() in
+# restic-common.sh) caps how many run that memory-heavy part at once
+# to RESTIC_BACKUP_MAX_PARALLEL - every share's `restic backup`
+# running at once is what caused an OOM on manny-01.
 #
 # This is the ExecStart of restic-backup.service (the daily timer-
 # driven entry point) and also what `resticctl backup-all` runs for an
