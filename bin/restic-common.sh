@@ -412,13 +412,37 @@ parse_shares_file() {
     fi
 }
 
+# True if $1 is itself an active mount point, OR a subdirectory inside
+# one - not just a plain directory sitting on the root filesystem.
+#
+# Some CIFS shares here are mounted once at an admin-share root (e.g.
+# "//host/c$" on /mnt/SVMCIGOUVZ1001) with several logical restic
+# "shares" living as subdirectories of that single mount
+# (/mnt/SVMCIGOUVZ1001/test, /mnt/SVMCIGOUVZ1001/audit_log, ...) rather
+# than each getting its own mount - `mountpoint -q` on those
+# subdirectories always fails even though the CIFS mount backing them
+# is perfectly healthy. `findmnt -T` instead resolves the nearest
+# mount covering the path (itself or any ancestor) and we just check
+# that isn't "/" - still correctly fails if the CIFS/NFS mount drops
+# and the directory reverts to plain empty space on the root
+# filesystem, since in that case either the subdirectory no longer
+# exists at all (caught by the `-d` check in check_shares_mounted
+# below) or, for a share that's a mount point itself, the nearest
+# covering mount becomes "/".
+path_is_under_active_mount() {
+    local path="$1" target
+    target="$(findmnt -no TARGET --target "$path" 2>/dev/null)" || return 1
+    [[ -n "$target" && "$target" != "/" ]]
+}
+
 # Must be called after parse_shares_file. Verifies every entry in
-# SHARE_PATHS is an active mount point, populating the index-aligned
-# arrays VALID_SHARE_PATHS / VALID_SHARE_POLICIES. Missing/unmounted
-# shares are logged and, if REQUIRE_MOUNTED=true, cause the caller to
-# abort (via return 1); a per-share failure is never silently ignored.
-# Only used by backup - maintenance applies retention to every
-# configured share regardless of whether it's currently mounted.
+# SHARE_PATHS is an active mount point (or a subdirectory of one - see
+# path_is_under_active_mount), populating the index-aligned arrays
+# VALID_SHARE_PATHS / VALID_SHARE_POLICIES. Missing/unmounted shares
+# are logged and, if REQUIRE_MOUNTED=true, cause the caller to abort
+# (via return 1); a per-share failure is never silently ignored. Only
+# used by backup - maintenance applies retention to every configured
+# share regardless of whether it's currently mounted.
 check_shares_mounted() {
     VALID_SHARE_PATHS=()
     VALID_SHARE_POLICIES=()
@@ -434,8 +458,8 @@ check_shares_mounted() {
         fi
 
         if [[ "$REQUIRE_MOUNTED" == "true" ]]; then
-            if ! mountpoint -q "$path"; then
-                log_error "share path is not an active mount point: $path"
+            if ! path_is_under_active_mount "$path"; then
+                log_error "share path is not an active mount point (or under one): $path"
                 missing=1
                 continue
             fi

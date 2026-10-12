@@ -162,7 +162,7 @@ underlying scripts directly, not through `resticctl`).
 
 - `restic` (recent enough to support `--pack-size`, `--read-concurrency`
   and `-o s3.connections` / `-o s3.storage-class`)
-- `bash`, `systemd`, `logrotate`, `mountpoint`, `flock`, `timeout`
+- `bash`, `systemd`, `logrotate`, `mountpoint`, `findmnt`, `flock`, `timeout`
   (util-linux/coreutils, almost always already present)
 - `jq` and `shuf` (coreutils) - used by `restic-snapshots.sh --latest-id`,
   required by `restic-verify.sh` and `restic-report.sh`, and by
@@ -304,6 +304,16 @@ Add as many policies and shares as you need - the names `short`/
 Cohesity's tiers), not special-cased anywhere in the scripts. A share
 with an unknown policy name causes both backup and maintenance to
 abort loudly rather than silently apply the wrong retention.
+
+A share's path doesn't need to be its own dedicated mount point -
+it's fine for several shares to be subdirectories of one larger mount
+(e.g. several `shares.conf` entries under `/mnt/SVMCIGOUVZ1001/...`,
+all backed by a single CIFS mount of the admin share `//host/c$`).
+Before each backup, `check_shares_mounted()` in `bin/restic-common.sh`
+verifies every configured path is itself an active mount or sits
+*underneath* one (`findmnt -T`, not `mountpoint -q`), so this still
+aborts loudly if the underlying CIFS/NFS mount actually drops instead
+of silently backing up whatever's left on the local root filesystem.
 
 **Why one snapshot per share is required:** restic's `forget`/`prune`
 act on whole snapshots, not on sub-paths within one. To let two shares
