@@ -23,7 +23,17 @@ fi
 source "$RESTIC_SECRETS_FILE"
 
 : "${RESTIC_REPOSITORY:?RESTIC_REPOSITORY must be set in $RESTIC_ENV_FILE}"
-: "${RESTIC_PASSWORD:?RESTIC_PASSWORD must be set in $RESTIC_SECRETS_FILE}"
+# Accepts any of restic's own three password sources - RESTIC_PASSWORD
+# (inline, in secrets.env), RESTIC_PASSWORD_FILE, or
+# RESTIC_PASSWORD_COMMAND - rather than hard-requiring the inline
+# value. Whichever is set gets passed straight through to restic
+# unmodified (see the export further down): this script never reads
+# RESTIC_PASSWORD_FILE's contents itself, so the password only ever
+# exists in restic's own process, not in ours.
+if [[ -z "${RESTIC_PASSWORD:-}" && -z "${RESTIC_PASSWORD_FILE:-}" && -z "${RESTIC_PASSWORD_COMMAND:-}" ]]; then
+    echo "FATAL: one of RESTIC_PASSWORD, RESTIC_PASSWORD_FILE or RESTIC_PASSWORD_COMMAND must be set in $RESTIC_ENV_FILE or $RESTIC_SECRETS_FILE" >&2
+    exit 1
+fi
 : "${RESTIC_CACHE_DIR:?RESTIC_CACHE_DIR must be set in $RESTIC_ENV_FILE}"
 : "${RESTIC_TMP_DIR:?RESTIC_TMP_DIR must be set in $RESTIC_ENV_FILE}"
 : "${LOG_DIR:?LOG_DIR must be set in $RESTIC_ENV_FILE}"
@@ -54,7 +64,13 @@ mkdir -p "$RESTIC_CACHE_DIR" "$RESTIC_TMP_DIR" "$LOG_DIR" "$(dirname "$RESTIC_LO
 export TMPDIR="$RESTIC_TMP_DIR"
 export RESTIC_CACHE_DIR
 export RESTIC_REPOSITORY
-export RESTIC_PASSWORD
+# Export only whichever password source is actually set - never force
+# RESTIC_PASSWORD to an empty string, which is a different (untested)
+# case from it being genuinely unset as far as restic's own password
+# resolution is concerned.
+[[ -n "${RESTIC_PASSWORD:-}" ]] && export RESTIC_PASSWORD
+[[ -n "${RESTIC_PASSWORD_FILE:-}" ]] && export RESTIC_PASSWORD_FILE
+[[ -n "${RESTIC_PASSWORD_COMMAND:-}" ]] && export RESTIC_PASSWORD_COMMAND
 export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-}"
 export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-}"
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-}"

@@ -173,8 +173,9 @@ underlying scripts directly, not through `resticctl`).
 - `mail`/`sendmail` and/or `curl`, only if you enable email or webhook
   failure notifications (`RESTIC_NOTIFY_EMAIL` / `RESTIC_NOTIFY_WEBHOOK_URL`)
 - `curl` and `sha256sum` (on whatever machine fetches Backrest) and
-  `tar` and `sha256sum` (on manny-01 itself), only if you install the
-  optional Backrest web UI - see
+  `tar`, `sha256sum` and `setfacl`/`getfacl` (the `acl` package, on
+  manny-01 itself), only if you install the optional Backrest web UI -
+  see
   [Browsing snapshots in a web UI](#browsing-snapshots-in-a-web-ui-backrest-optional)
 
 ## Install
@@ -199,7 +200,10 @@ Then:
    ```
 2. Edit `/etc/restic/secrets.env` (chmod 600, root-only) with the
    repository password and your AWS access key/secret (ideally a
-   dedicated IAM user scoped to just this bucket/prefix).
+   dedicated IAM user scoped to just this bucket/prefix) - or, more
+   securely, `RESTIC_PASSWORD_FILE`/`RESTIC_PASSWORD_COMMAND` and
+   `AWS_PROFILE` instead; see the comments in
+   `config/secrets.env.example`.
 3. Edit `/etc/restic/retention-policies.conf` to define your policies
    (short/mid/long, or whatever names you want), then
    `/etc/restic/shares.conf` to list each share's mount point and
@@ -501,12 +505,24 @@ this runs a third-party binary on a government backup server - see
 `vendor/README.md` for the full fetch/deploy flow and how to upgrade.
 
 `install-backrest.sh` installs the binary, a dedicated unprivileged
-`backrest` system user, and `systemd/backrest.service`, but does
-**not** start it - fill in `/etc/backrest/secrets.env` first (copy the
-repository/password/AWS credentials from
-`/etc/restic/{restic,secrets}.env` - kept in a separate file so
-Backrest's service user isn't given access to the main secrets file
-and whatever else ends up in it), then:
+`backrest` system user, and `systemd/backrest.service` - but does
+**not** start it. No secrets to fill in anywhere: this host actually
+has two overlapping credential mechanisms at once
+(`RESTIC_PASSWORD_FILE`/`AWS_PROFILE` in `restic.env`, *and* literal
+`RESTIC_PASSWORD`/`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` in
+`secrets.env`), and which one restic/the AWS SDK actually prefers
+isn't something to guess at or duplicate. So `backrest.service` reads
+`/etc/restic/restic.env` and `/etc/restic/secrets.env` directly, in
+the same order `restic-backup.sh` itself sources them - Backrest ends
+up authenticating exactly the same way the real backups already do,
+whichever mechanism that turns out to be. The installer grants
+`backrest` read access to `secrets.env` with a POSIX ACL
+(`setfacl -m u:backrest:r /etc/restic/secrets.env`, requires the `acl`
+package) rather than changing that file's ownership or mode - still
+`600 root:root`, just additionally readable by this one service
+account. Verify with `getfacl /etc/restic/secrets.env`.
+
+Then:
 
 ```sh
 systemctl enable --now backrest.service
@@ -528,11 +544,17 @@ interface's `IP:9898` and/or add a host firewall rule scoped to the
 backup network.
 
 **Use it read-only, exactly like the rest of this section:**
-- **Only "Add Repo" to import the existing repository. Never add a
-  "Plan"** - a Plan is what makes Backrest schedule its own
-  backups/retention, which would duplicate (and could fight with) the
-  dispatcher and timers already running here. Importing a Repo alone
-  just lets you browse what `resticctl list`/`restic snapshots`
+- **Only "Add Repo" to import the existing repository, and leave its
+  password field empty.** The service environment already carries
+  whichever of `RESTIC_PASSWORD_FILE` or `RESTIC_PASSWORD` this host's
+  config actually resolves to, so Backrest picks it up the same way
+  restic itself does - confirmed from the release binary itself, which
+  clears any password typed into a Repo's config once it detects
+  `RESTIC_PASSWORD_FILE` in that repo's environment.
+  **Never add a "Plan"** - a Plan is what makes Backrest schedule its
+  own backups/retention, which would duplicate (and could fight with)
+  the dispatcher and timers already running here. Importing a Repo
+  alone just lets you browse what `resticctl list`/`restic snapshots`
   already read safely.
 - **Stick to the snapshot list view; avoid "browse files" and
   "restore" inside Backrest.** Those read actual file contents
