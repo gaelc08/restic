@@ -3,13 +3,25 @@ Description=Backrest (read-only snapshot browser for the restic repository)
 Documentation=https://github.com/garethgeorge/backrest
 Wants=network-online.target
 After=network-online.target
-ConditionPathExists=/etc/backrest/secrets.env
+ConditionPathExists=/etc/restic/secrets.env
 
 [Service]
 Type=simple
 User=backrest
 Group=backrest
-EnvironmentFile=/etc/backrest/secrets.env
+# Reads the SAME two files restic-backup.sh itself sources (in the
+# same order, so overlap resolves the same way) rather than a
+# duplicated copy - this host actually has both a RESTIC_PASSWORD_FILE/
+# AWS_PROFILE setup in restic.env AND literal RESTIC_PASSWORD/
+# AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY in secrets.env at once, and
+# which one restic/the AWS SDK actually prefers isn't this unit's
+# business to guess - inheriting the exact same environment the real
+# backups use means Backrest authenticates exactly the same way,
+# whichever that turns out to be. bin/install-backrest.sh grants this
+# service's user read access to secrets.env via a POSIX ACL (`setfacl`)
+# rather than changing that file's own ownership/permissions.
+EnvironmentFile=/etc/restic/restic.env
+EnvironmentFile=/etc/restic/secrets.env
 # -restic-cmd points Backrest at the SAME restic binary already
 # installed for the main backup automation, rather than letting it
 # silently download and manage its own copy - one restic version in
@@ -49,10 +61,11 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=backrest
 
-# Basic hardening - Backrest only needs its own config/data directory
-# and the system restic binary; it writes nothing to the main restic
-# automation's directories (/opt/restic, /var/log/restic, /etc/restic)
-# and isn't granted access to them.
+# Basic hardening - Backrest only writes to its own config/data
+# directory. It reads /etc/restic/{restic,secrets}.env (see the
+# EnvironmentFile= lines above) but writes nothing to /opt/restic,
+# /var/log/restic, or /etc/restic, and isn't granted write access to
+# any of them.
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=true

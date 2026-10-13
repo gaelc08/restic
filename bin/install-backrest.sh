@@ -18,9 +18,11 @@
 # hand (bin/backrest-version.sh) rather than always fetching "latest",
 # since this runs a third-party binary on a government backup server.
 #
-# Does NOT enable or start the service, and does NOT create
-# /etc/backrest/secrets.env if it's missing - fill that in first (see
-# README.md), then:
+# Does NOT enable or start the service. No secrets to fill in either -
+# it reads /etc/restic/restic.env and /etc/restic/secrets.env
+# directly, the exact same files and credentials restic-backup.sh
+# itself already uses (see the ACL grant below and
+# systemd/backrest.service for why). Just:
 #   systemctl daemon-reload
 #   systemctl enable --now backrest.service
 #
@@ -85,47 +87,27 @@ install -m 0755 "${WORK_DIR}/backrest" /opt/backrest/bin/backrest
 
 echo "==> Creating config/data directories"
 mkdir -p /etc/backrest /var/lib/backrest /var/lib/backrest/cache
+chown backrest:backrest /etc/backrest
 chown -R backrest:backrest /var/lib/backrest
-chown root:backrest /etc/backrest
-chmod 750 /etc/backrest
 
-if [[ -f /etc/backrest/secrets.env ]]; then
-    echo "    skip existing /etc/backrest/secrets.env"
-else
-    # Mirrors the SAME mechanism restic.env already uses here
-    # (RESTIC_PASSWORD_FILE + AWS_PROFILE against a credentials file),
-    # not raw inline secrets - Backrest supports this natively (its
-    # restic subprocess reads RESTIC_PASSWORD_FILE/AWS_PROFILE exactly
-    # like a normal restic invocation would). The actual secret bytes
-    # go in the two files below, copied once from the real sources
-    # (/etc/restic/password, /root/.aws/credentials's [backup]
-    # section) - acceptable here since those are static/rarely
-    # rotated; if that changes, point these at the originals via a
-    # read ACL instead of copying.
-    cat > /etc/backrest/secrets.env <<'EOF'
-RESTIC_REPOSITORY="s3:https://scrat-1.ctie.etat.lu:4443/restic"
-RESTIC_PASSWORD_FILE=/etc/backrest/password
-AWS_SHARED_CREDENTIALS_FILE=/etc/backrest/aws-credentials
-AWS_PROFILE=backup
-EOF
-    chown backrest:backrest /etc/backrest/secrets.env
-    chmod 600 /etc/backrest/secrets.env
-    echo "    wrote /etc/backrest/secrets.env"
-
-    touch /etc/backrest/password
-    chown backrest:backrest /etc/backrest/password
-    chmod 600 /etc/backrest/password
-    echo "    created empty /etc/backrest/password - paste the SAME content as /etc/restic/password into it (no trailing newline)"
-
-    cat > /etc/backrest/aws-credentials <<'EOF'
-[backup]
-aws_access_key_id =
-aws_secret_access_key =
-EOF
-    chown backrest:backrest /etc/backrest/aws-credentials
-    chmod 600 /etc/backrest/aws-credentials
-    echo "    wrote /etc/backrest/aws-credentials - fill in the [backup] profile from /root/.aws/credentials"
+echo "==> Granting backrest read access to the existing restic secrets"
+# No copy: Backrest reads /etc/restic/{restic,secrets}.env directly
+# (see systemd/backrest.service), the exact same files and order
+# restic-backup.sh itself sources - so it authenticates exactly the
+# same way the real backups do, whichever of this host's two
+# overlapping credential mechanisms (RESTIC_PASSWORD_FILE/AWS_PROFILE
+# in restic.env, or the literal RESTIC_PASSWORD/AWS_ACCESS_KEY_ID/
+# AWS_SECRET_ACCESS_KEY in secrets.env) actually wins. A POSIX ACL
+# grants just read access on secrets.env without changing its
+# ownership or mode (still 600 root:root) - restic.env isn't secret
+# and needs no ACL. Requires the `acl` package (setfacl/getfacl).
+if ! command -v setfacl >/dev/null 2>&1; then
+    echo "setfacl not found (part of the 'acl' package) - install it, e.g. 'dnf install acl', and re-run this script." >&2
+    exit 1
 fi
+setfacl -m u:backrest:x /etc/restic
+setfacl -m u:backrest:r /etc/restic/secrets.env
+echo "    granted backrest read access to /etc/restic/secrets.env (getfacl /etc/restic/secrets.env to verify)"
 
 echo "==> Installing systemd unit"
 install -m 0644 "${REPO_ROOT}/systemd/backrest.service" /etc/systemd/system/backrest.service
@@ -133,14 +115,15 @@ systemctl daemon-reload
 
 cat <<'EOF'
 
-==> Backrest installed, but NOT started. Before starting it:
-    1. Paste the restic repo password into /etc/backrest/password
-       (same content as /etc/restic/password, no trailing newline).
-    2. Fill in the [backup] profile in /etc/backrest/aws-credentials
-       from /root/.aws/credentials.
-    3. Confirm the system restic binary is at /usr/bin/restic (`which restic`);
-       if not, edit BACKREST_RESTIC_COMMAND in systemd/backrest.service and
-       `systemctl daemon-reload`.
+==> Backrest installed, but NOT started.
+No secrets to fill in - it reads /etc/restic/restic.env and
+/etc/restic/secrets.env directly (read access just granted via ACL),
+the same files and credentials the real backups already use.
+
+Before starting it, confirm the system restic binary is at
+/usr/bin/restic (`which restic`); if not, edit
+BACKREST_RESTIC_COMMAND in systemd/backrest.service and
+`systemctl daemon-reload`.
 
 Then:
     systemctl enable --now backrest.service
@@ -155,10 +138,11 @@ a reverse proxy in front instead of exposing this directly.
 
 IMPORTANT - see README.md's Backrest section for the full explanation:
   - Only "Add Repo" -> import the existing repository. Leave its
-    password field empty - with RESTIC_PASSWORD_FILE already set in
-    the service environment, Backrest reads the password from there,
-    the same way restic itself does. Do NOT add a "Plan" - that would
-    schedule Backrest's own backups/retention on top of the
+    password field empty - the service environment already has
+    whichever of RESTIC_PASSWORD_FILE or RESTIC_PASSWORD this host's
+    restic.env/secrets.env actually resolve to, so Backrest picks it
+    up the same way restic itself does. Do NOT add a "Plan" - that
+    would schedule Backrest's own backups/retention on top of the
     dispatcher/timers already running here.
   - Stick to the snapshot list view. Avoid "browse files"/"restore" in
     Backrest - this repository's S3 Glacier storage class means

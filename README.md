@@ -173,8 +173,9 @@ underlying scripts directly, not through `resticctl`).
 - `mail`/`sendmail` and/or `curl`, only if you enable email or webhook
   failure notifications (`RESTIC_NOTIFY_EMAIL` / `RESTIC_NOTIFY_WEBHOOK_URL`)
 - `curl` and `sha256sum` (on whatever machine fetches Backrest) and
-  `tar` and `sha256sum` (on manny-01 itself), only if you install the
-  optional Backrest web UI - see
+  `tar`, `sha256sum` and `setfacl`/`getfacl` (the `acl` package, on
+  manny-01 itself), only if you install the optional Backrest web UI -
+  see
   [Browsing snapshots in a web UI](#browsing-snapshots-in-a-web-ui-backrest-optional)
 
 ## Install
@@ -501,25 +502,22 @@ this runs a third-party binary on a government backup server - see
 `vendor/README.md` for the full fetch/deploy flow and how to upgrade.
 
 `install-backrest.sh` installs the binary, a dedicated unprivileged
-`backrest` system user, and `systemd/backrest.service`, but does
-**not** start it. It writes `/etc/backrest/secrets.env` pointing at
-two more files you fill in by hand - mirroring the *same* mechanism
-`restic.env` already uses here (`RESTIC_PASSWORD_FILE` + `AWS_PROFILE`
-against a credentials file), not raw inline secrets, and kept separate
-from `/etc/restic/secrets.env` so Backrest's service user isn't given
-access to the main secrets file and whatever else ends up in it:
-
-- `/etc/backrest/password` - paste the same content as
-  `/etc/restic/password` (restic's `RESTIC_PASSWORD_FILE` target).
-- `/etc/backrest/aws-credentials` - fill in the `[backup]` profile
-  from `/root/.aws/credentials` (the same profile `AWS_PROFILE=backup`
-  in `restic.env` already points at).
-
-This copies two static, rarely-rotated secrets once rather than
-granting Backrest's service user ACL read access into `/root` - if
-that stops being true (the password or AWS keys start rotating
-regularly), switch to a read ACL on the originals instead of letting
-this copy go stale.
+`backrest` system user, and `systemd/backrest.service` - but does
+**not** start it. No secrets to fill in anywhere: this host actually
+has two overlapping credential mechanisms at once
+(`RESTIC_PASSWORD_FILE`/`AWS_PROFILE` in `restic.env`, *and* literal
+`RESTIC_PASSWORD`/`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` in
+`secrets.env`), and which one restic/the AWS SDK actually prefers
+isn't something to guess at or duplicate. So `backrest.service` reads
+`/etc/restic/restic.env` and `/etc/restic/secrets.env` directly, in
+the same order `restic-backup.sh` itself sources them - Backrest ends
+up authenticating exactly the same way the real backups already do,
+whichever mechanism that turns out to be. The installer grants
+`backrest` read access to `secrets.env` with a POSIX ACL
+(`setfacl -m u:backrest:r /etc/restic/secrets.env`, requires the `acl`
+package) rather than changing that file's ownership or mode - still
+`600 root:root`, just additionally readable by this one service
+account. Verify with `getfacl /etc/restic/secrets.env`.
 
 Then:
 
@@ -544,11 +542,12 @@ backup network.
 
 **Use it read-only, exactly like the rest of this section:**
 - **Only "Add Repo" to import the existing repository, and leave its
-  password field empty.** With `RESTIC_PASSWORD_FILE` already set in
-  the service environment, Backrest reads the password from there the
-  same way restic itself does - confirmed from the release binary
-  itself, which clears any password typed into a Repo's config once
-  it detects `RESTIC_PASSWORD_FILE` in that repo's environment.
+  password field empty.** The service environment already carries
+  whichever of `RESTIC_PASSWORD_FILE` or `RESTIC_PASSWORD` this host's
+  config actually resolves to, so Backrest picks it up the same way
+  restic itself does - confirmed from the release binary itself, which
+  clears any password typed into a Repo's config once it detects
+  `RESTIC_PASSWORD_FILE` in that repo's environment.
   **Never add a "Plan"** - a Plan is what makes Backrest schedule its
   own backups/retention, which would duplicate (and could fight with)
   the dispatcher and timers already running here. Importing a Repo
