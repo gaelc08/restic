@@ -502,11 +502,26 @@ this runs a third-party binary on a government backup server - see
 
 `install-backrest.sh` installs the binary, a dedicated unprivileged
 `backrest` system user, and `systemd/backrest.service`, but does
-**not** start it - fill in `/etc/backrest/secrets.env` first (copy the
-repository/password/AWS credentials from
-`/etc/restic/{restic,secrets}.env` - kept in a separate file so
-Backrest's service user isn't given access to the main secrets file
-and whatever else ends up in it), then:
+**not** start it. It writes `/etc/backrest/secrets.env` pointing at
+two more files you fill in by hand - mirroring the *same* mechanism
+`restic.env` already uses here (`RESTIC_PASSWORD_FILE` + `AWS_PROFILE`
+against a credentials file), not raw inline secrets, and kept separate
+from `/etc/restic/secrets.env` so Backrest's service user isn't given
+access to the main secrets file and whatever else ends up in it:
+
+- `/etc/backrest/password` - paste the same content as
+  `/etc/restic/password` (restic's `RESTIC_PASSWORD_FILE` target).
+- `/etc/backrest/aws-credentials` - fill in the `[backup]` profile
+  from `/root/.aws/credentials` (the same profile `AWS_PROFILE=backup`
+  in `restic.env` already points at).
+
+This copies two static, rarely-rotated secrets once rather than
+granting Backrest's service user ACL read access into `/root` - if
+that stops being true (the password or AWS keys start rotating
+regularly), switch to a read ACL on the originals instead of letting
+this copy go stale.
+
+Then:
 
 ```sh
 systemctl enable --now backrest.service
@@ -528,11 +543,16 @@ interface's `IP:9898` and/or add a host firewall rule scoped to the
 backup network.
 
 **Use it read-only, exactly like the rest of this section:**
-- **Only "Add Repo" to import the existing repository. Never add a
-  "Plan"** - a Plan is what makes Backrest schedule its own
-  backups/retention, which would duplicate (and could fight with) the
-  dispatcher and timers already running here. Importing a Repo alone
-  just lets you browse what `resticctl list`/`restic snapshots`
+- **Only "Add Repo" to import the existing repository, and leave its
+  password field empty.** With `RESTIC_PASSWORD_FILE` already set in
+  the service environment, Backrest reads the password from there the
+  same way restic itself does - confirmed from the release binary
+  itself, which clears any password typed into a Repo's config once
+  it detects `RESTIC_PASSWORD_FILE` in that repo's environment.
+  **Never add a "Plan"** - a Plan is what makes Backrest schedule its
+  own backups/retention, which would duplicate (and could fight with)
+  the dispatcher and timers already running here. Importing a Repo
+  alone just lets you browse what `resticctl list`/`restic snapshots`
   already read safely.
 - **Stick to the snapshot list view; avoid "browse files" and
   "restore" inside Backrest.** Those read actual file contents

@@ -92,21 +92,39 @@ chmod 750 /etc/backrest
 if [[ -f /etc/backrest/secrets.env ]]; then
     echo "    skip existing /etc/backrest/secrets.env"
 else
+    # Mirrors the SAME mechanism restic.env already uses here
+    # (RESTIC_PASSWORD_FILE + AWS_PROFILE against a credentials file),
+    # not raw inline secrets - Backrest supports this natively (its
+    # restic subprocess reads RESTIC_PASSWORD_FILE/AWS_PROFILE exactly
+    # like a normal restic invocation would). The actual secret bytes
+    # go in the two files below, copied once from the real sources
+    # (/etc/restic/password, /root/.aws/credentials's [backup]
+    # section) - acceptable here since those are static/rarely
+    # rotated; if that changes, point these at the originals via a
+    # read ACL instead of copying.
     cat > /etc/backrest/secrets.env <<'EOF'
-# Credentials Backrest's restic subprocess needs to read the existing
-# repository - copy the values from /etc/restic/restic.env and
-# /etc/restic/secrets.env (kept separate so Backrest's own service
-# user isn't given access to the main secrets file and whatever else
-# ends up in it, e.g. notification webhook URLs).
-RESTIC_REPOSITORY=
-RESTIC_PASSWORD=
-AWS_ACCESS_KEY_ID=
-AWS_SECRET_ACCESS_KEY=
-#AWS_DEFAULT_REGION=
+RESTIC_REPOSITORY="s3:https://scrat-1.ctie.etat.lu:4443/restic"
+RESTIC_PASSWORD_FILE=/etc/backrest/password
+AWS_SHARED_CREDENTIALS_FILE=/etc/backrest/aws-credentials
+AWS_PROFILE=backup
 EOF
     chown backrest:backrest /etc/backrest/secrets.env
     chmod 600 /etc/backrest/secrets.env
-    echo "    wrote /etc/backrest/secrets.env (fill in before starting the service)"
+    echo "    wrote /etc/backrest/secrets.env"
+
+    touch /etc/backrest/password
+    chown backrest:backrest /etc/backrest/password
+    chmod 600 /etc/backrest/password
+    echo "    created empty /etc/backrest/password - paste the SAME content as /etc/restic/password into it (no trailing newline)"
+
+    cat > /etc/backrest/aws-credentials <<'EOF'
+[backup]
+aws_access_key_id =
+aws_secret_access_key =
+EOF
+    chown backrest:backrest /etc/backrest/aws-credentials
+    chmod 600 /etc/backrest/aws-credentials
+    echo "    wrote /etc/backrest/aws-credentials - fill in the [backup] profile from /root/.aws/credentials"
 fi
 
 echo "==> Installing systemd unit"
@@ -116,9 +134,11 @@ systemctl daemon-reload
 cat <<'EOF'
 
 ==> Backrest installed, but NOT started. Before starting it:
-    1. Fill in /etc/backrest/secrets.env (repository, password, AWS credentials -
-       copy the values from /etc/restic/restic.env + secrets.env).
-    2. Confirm the system restic binary is at /usr/bin/restic (`which restic`);
+    1. Paste the restic repo password into /etc/backrest/password
+       (same content as /etc/restic/password, no trailing newline).
+    2. Fill in the [backup] profile in /etc/backrest/aws-credentials
+       from /root/.aws/credentials.
+    3. Confirm the system restic binary is at /usr/bin/restic (`which restic`);
        if not, edit BACKREST_RESTIC_COMMAND in systemd/backrest.service and
        `systemctl daemon-reload`.
 
@@ -134,9 +154,12 @@ as plain HTTP - if your network needs encryption in transit too, put
 a reverse proxy in front instead of exposing this directly.
 
 IMPORTANT - see README.md's Backrest section for the full explanation:
-  - Only "Add Repo" -> import the existing repository. Do NOT add a
-    "Plan" - that would schedule Backrest's own backups/retention on
-    top of the dispatcher/timers already running here.
+  - Only "Add Repo" -> import the existing repository. Leave its
+    password field empty - with RESTIC_PASSWORD_FILE already set in
+    the service environment, Backrest reads the password from there,
+    the same way restic itself does. Do NOT add a "Plan" - that would
+    schedule Backrest's own backups/retention on top of the
+    dispatcher/timers already running here.
   - Stick to the snapshot list view. Avoid "browse files"/"restore" in
     Backrest - this repository's S3 Glacier storage class means
     reading actual file contents needs the deliberately manual
