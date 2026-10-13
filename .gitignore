@@ -1,0 +1,4 @@
+# Third-party binaries fetched by bin/fetch-backrest.sh - see
+# vendor/README.md. Not versioned; ./update-manny.sh rsyncs the whole
+# working tree regardless of what git tracks.
+/vendor/*.tar.gz
