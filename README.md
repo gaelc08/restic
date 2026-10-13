@@ -200,7 +200,10 @@ Then:
    ```
 2. Edit `/etc/restic/secrets.env` (chmod 600, root-only) with the
    repository password and your AWS access key/secret (ideally a
-   dedicated IAM user scoped to just this bucket/prefix).
+   dedicated IAM user scoped to just this bucket/prefix) - or, more
+   securely, `RESTIC_PASSWORD_FILE`/`RESTIC_PASSWORD_COMMAND` and
+   `AWS_PROFILE` instead; see the comments in
+   `config/secrets.env.example`.
 3. Edit `/etc/restic/retention-policies.conf` to define your policies
    (short/mid/long, or whatever names you want), then
    `/etc/restic/shares.conf` to list each share's mount point and
