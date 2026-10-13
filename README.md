@@ -485,20 +485,30 @@ It's pinned to one specific release and checksum (captured by hand,
 not fetched as "latest") rather than always tracking upstream, since
 this runs a third-party binary on a government backup server. It
 installs the binary, a dedicated unprivileged `backrest` system user,
-and `systemd/backrest.service` (bound to `127.0.0.1:9898` only), but
-does **not** start it - fill in `/etc/backrest/secrets.env` first
-(copy the repository/password/AWS credentials from
-`/etc/restic/{restic,secrets}.env` - kept in a separate file so
-Backrest's service user isn't given access to the main secrets file
-and whatever else ends up in it), then:
+and `systemd/backrest.service`, but does **not** start it - fill in
+`/etc/backrest/secrets.env` first (copy the repository/password/AWS
+credentials from `/etc/restic/{restic,secrets}.env` - kept in a
+separate file so Backrest's service user isn't given access to the
+main secrets file and whatever else ends up in it), then:
 
 ```sh
 systemctl enable --now backrest.service
-ssh -L 9898:127.0.0.1:9898 <this host>   # from your workstation
 ```
 
-Open `http://localhost:9898`; the first visit prompts you to create
-an admin username/password.
+manny-01's backup network is already protected, so this listens on
+every interface (`BACKREST_PORT=:9898` in the unit) rather than only
+`127.0.0.1` - open `http://<this host>:9898` directly, no SSH tunnel
+needed. Backrest enforces its own local authentication on every
+request: the first visit prompts you to create an admin
+username/password (bcrypt-hashed, changeable later in its Settings
+page) before anything else is reachable - do this immediately after
+first starting the service. It has **no built-in TLS**, so that login
+and everything else travels as plain HTTP; if the network ever needs
+encryption in transit too, put a TLS-terminating reverse proxy in
+front rather than changing the unit file. To restrict it to a specific
+interface instead of all of them, set `BACKREST_PORT` to that
+interface's `IP:9898` and/or add a host firewall rule scoped to the
+backup network.
 
 **Use it read-only, exactly like the rest of this section:**
 - **Only "Add Repo" to import the existing repository. Never add a

@@ -115,10 +115,13 @@ cat <<'EOF'
 Then:
     systemctl enable --now backrest.service
 
-Backrest binds to 127.0.0.1:9898 only - reach it through an SSH tunnel:
-    ssh -L 9898:127.0.0.1:9898 <this host>
-then open http://localhost:9898 in your browser. First visit prompts
-you to create an admin username/password.
+Backrest listens on every interface (BACKREST_PORT=:9898) - open
+http://<this host>:9898 directly. First visit prompts you to create
+an admin username/password (bcrypt-hashed) - do this immediately,
+before anyone else on the network can reach that first-run screen.
+There is NO built-in TLS, so that login (and everything else) travels
+as plain HTTP - if your network needs encryption in transit too, put
+a reverse proxy in front instead of exposing this directly.
 
 IMPORTANT - see README.md's Backrest section for the full explanation:
   - Only "Add Repo" -> import the existing repository. Do NOT add a

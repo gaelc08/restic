@@ -15,7 +15,7 @@ EnvironmentFile=/etc/backrest/secrets.env
 # silently download and manage its own copy - one restic version in
 # use on this host, not two. Adjust the path if `restic` isn't at
 # /usr/bin/restic here (`which restic`).
-Environment="BACKREST_PORT=127.0.0.1:9898"
+Environment="BACKREST_PORT=:9898"
 Environment="BACKREST_CONFIG=/etc/backrest/config.json"
 Environment="BACKREST_DATA=/var/lib/backrest"
 Environment="BACKREST_RESTIC_COMMAND=/usr/bin/restic"
@@ -24,12 +24,22 @@ ExecStart=/opt/backrest/bin/backrest
 Restart=on-failure
 RestartSec=5
 
-# Deliberately bound to 127.0.0.1 only (see BACKREST_PORT above) -
-# access it via an SSH tunnel (ssh -L 9898:127.0.0.1:9898 manny-01),
-# never by exposing the port directly. See README.md for the full
-# setup (first-run admin account, importing the existing repo as a
-# Repo without ever adding a Plan, and why its browse/restore
-# features should be avoided here).
+# Exposed on every interface (`:9898`, Backrest's own documented
+# syntax for "listen on all interfaces") rather than 127.0.0.1-only,
+# since this runs on manny-01's protected backup network and doesn't
+# need an SSH tunnel there. Backrest has its own built-in auth (local
+# username/password, bcrypt-hashed) enforced on every request - the
+# first visit to the UI forces you to create that account before
+# anything else is reachable. It has no built-in TLS, so traffic
+# (including the login) is plain HTTP; if that network needs
+# encryption in transit too, put a TLS-terminating reverse proxy in
+# front instead of changing this. If you want to narrow this further
+# than "every interface", set BACKREST_PORT to a specific IP:port
+# (e.g. the backup network's own interface) instead of `:9898`, and/or
+# restrict access with a host firewall rule scoped to that network.
+# See README.md for the full setup (importing the existing repo as a
+# Repo without ever adding a Plan, and why its browse/restore features
+# should be avoided here).
 
 Nice=10
 IOSchedulingClass=best-effort
