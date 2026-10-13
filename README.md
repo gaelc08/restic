@@ -172,8 +172,9 @@ underlying scripts directly, not through `resticctl`).
   `resticctl add-share`, which doesn't install them for you
 - `mail`/`sendmail` and/or `curl`, only if you enable email or webhook
   failure notifications (`RESTIC_NOTIFY_EMAIL` / `RESTIC_NOTIFY_WEBHOOK_URL`)
-- `curl`, `tar` and `sha256sum`, only if you install the optional
-  Backrest web UI (`bin/install-backrest.sh`) - see
+- `curl` and `sha256sum` (on whatever machine fetches Backrest) and
+  `tar` and `sha256sum` (on manny-01 itself), only if you install the
+  optional Backrest web UI - see
   [Browsing snapshots in a web UI](#browsing-snapshots-in-a-web-ui-backrest-optional)
 
 ## Install
@@ -475,21 +476,37 @@ Once there are enough shares and enough history, `resticctl list`'s
 table gets long. [`bin/install-backrest.sh`](bin/install-backrest.sh)
 installs [Backrest](https://github.com/garethgeorge/backrest) as an
 optional, separate add-on - a small web UI, not wired into
-`install.sh` or any of the backup automation:
+`install.sh` or any of the backup automation.
+
+**manny-01 has no internet access**, so `bin/install-backrest.sh`
+never downloads anything itself - it installs from a tarball vendored
+into `vendor/` ahead of time. Fetch and deploy it in two steps:
 
 ```sh
+# 1. On the laptop that runs ./update-manny.sh (has internet):
+bin/fetch-backrest.sh
+./update-manny.sh
+
+# 2. On manny-01 (offline), from the synced checkout:
 sudo bin/install-backrest.sh
 ```
 
-It's pinned to one specific release and checksum (captured by hand,
+`fetch-backrest.sh` downloads the pinned release into `vendor/` and
+verifies it against the checksum in `bin/backrest-version.sh`;
+`install-backrest.sh` re-verifies that same checksum before installing
+from it, so a stale or tampered vendor file is never installed
+silently. Both are pinned to one specific release (captured by hand,
 not fetched as "latest") rather than always tracking upstream, since
-this runs a third-party binary on a government backup server. It
-installs the binary, a dedicated unprivileged `backrest` system user,
-and `systemd/backrest.service`, but does **not** start it - fill in
-`/etc/backrest/secrets.env` first (copy the repository/password/AWS
-credentials from `/etc/restic/{restic,secrets}.env` - kept in a
-separate file so Backrest's service user isn't given access to the
-main secrets file and whatever else ends up in it), then:
+this runs a third-party binary on a government backup server - see
+`vendor/README.md` for the full fetch/deploy flow and how to upgrade.
+
+`install-backrest.sh` installs the binary, a dedicated unprivileged
+`backrest` system user, and `systemd/backrest.service`, but does
+**not** start it - fill in `/etc/backrest/secrets.env` first (copy the
+repository/password/AWS credentials from
+`/etc/restic/{restic,secrets}.env` - kept in a separate file so
+Backrest's service user isn't given access to the main secrets file
+and whatever else ends up in it), then:
 
 ```sh
 systemctl enable --now backrest.service
@@ -526,11 +543,12 @@ backup network.
   UI doesn't know about that and may just hang or fail trying to read
   data that needs a Glacier restore first.
 
-To upgrade Backrest later: download the new release's
-`backrest_Linux_x86_64.tar.gz` yourself, run `sha256sum` on it, and
-update `BACKREST_VERSION`/`BACKREST_SHA256` in
-`bin/install-backrest.sh` together after checking the release notes -
-never just re-run the installer against a moving "latest" tag.
+To upgrade Backrest later: after checking the release notes, update
+`BACKREST_VERSION`/`BACKREST_SHA256` in `bin/backrest-version.sh`
+together (never just bump one, and never point at a moving "latest"
+tag), then repeat the fetch/deploy flow above - `fetch-backrest.sh`
+will pull the new version into `vendor/` and `install-backrest.sh`
+will verify and install it.
 
 ## Removing snapshots manually
 

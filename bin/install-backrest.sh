@@ -4,13 +4,19 @@
 # host already backs up to - a web UI to replace squinting at
 # `resticctl list` once there are many shares/snapshots.
 #
+# manny-01 is on an isolated network with no internet access, so this
+# script NEVER downloads anything itself - it installs from a tarball
+# already sitting in vendor/, which must have been fetched on a
+# machine WITH internet access (bin/fetch-backrest.sh, run on the
+# laptop that also runs ./update-manny.sh) and carried over by that
+# same rsync. See vendor/README.md.
+#
 # This is a separate, optional add-on, not wired into install.sh:
 # Backrest is its own long-running web service, entirely independent
 # of the backup automation in bin/ and systemd/restic-*. It is pinned
 # to one specific release and verified against a checksum captured by
-# hand (see BACKREST_VERSION/BACKREST_SHA256 below) rather than always
-# fetching "latest", since this downloads and runs a third-party
-# binary on a government backup server.
+# hand (bin/backrest-version.sh) rather than always fetching "latest",
+# since this runs a third-party binary on a government backup server.
 #
 # Does NOT enable or start the service, and does NOT create
 # /etc/backrest/secrets.env if it's missing - fill that in first (see
@@ -36,33 +42,37 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# Pinned release - bump deliberately, not automatically. To upgrade:
-# download the new release's backrest_Linux_x86_64.tar.gz yourself,
-# run `sha256sum` on it, and update both values together after
-# checking the project's release notes.
-BACKREST_VERSION="v1.14.1"
-BACKREST_SHA256="acc7835a9c55b3d254f0fa285cacbe87ac912cb7e069d0211924838020e6921c"
-BACKREST_URL="https://github.com/garethgeorge/backrest/releases/download/${BACKREST_VERSION}/backrest_Linux_x86_64.tar.gz"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." &>/dev/null && pwd)"
+# shellcheck source=bin/backrest-version.sh
+source "${SCRIPT_DIR}/backrest-version.sh"
 
 ARCH="$(uname -m)"
 if [[ "$ARCH" != "x86_64" ]]; then
     echo "This installer only has a verified checksum for linux/x86_64 (got: ${ARCH})." >&2
-    echo "Download the matching backrest_Linux_<arch>.tar.gz from the Backrest" >&2
-    echo "releases page yourself, verify it, and adjust this script before running it here." >&2
+    echo "Fetch the matching backrest_Linux_<arch>.tar.gz on a connected machine" >&2
+    echo "yourself, verify it, and adjust this script and bin/fetch-backrest.sh before using it here." >&2
     exit 1
 fi
+
+VENDORED_TARBALL="${REPO_ROOT}/vendor/${BACKREST_ASSET}"
+if [[ ! -f "$VENDORED_TARBALL" ]]; then
+    echo "Missing ${VENDORED_TARBALL}." >&2
+    echo "manny-01 has no internet access, so this script never downloads Backrest" >&2
+    echo "itself. On a machine WITH internet access (the laptop that runs" >&2
+    echo "./update-manny.sh), run bin/fetch-backrest.sh, then run ./update-manny.sh" >&2
+    echo "as usual to carry the tarball over here, and re-run this installer." >&2
+    exit 1
+fi
+
+echo "==> Verifying vendored tarball"
+echo "${BACKREST_SHA256}  ${VENDORED_TARBALL}" | sha256sum -c -
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-echo "==> Downloading Backrest ${BACKREST_VERSION}"
-curl -fsSL -o "${WORK_DIR}/backrest.tar.gz" "$BACKREST_URL"
-
-echo "==> Verifying checksum"
-echo "${BACKREST_SHA256}  ${WORK_DIR}/backrest.tar.gz" | sha256sum -c -
-
 echo "==> Extracting"
-tar -xzf "${WORK_DIR}/backrest.tar.gz" -C "$WORK_DIR" backrest
+tar -xzf "$VENDORED_TARBALL" -C "$WORK_DIR" backrest
 
 echo "==> Creating backrest system user"
 if ! getent passwd backrest >/dev/null; then
@@ -100,7 +110,7 @@ EOF
 fi
 
 echo "==> Installing systemd unit"
-install -m 0644 "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." &>/dev/null && pwd)/systemd/backrest.service" /etc/systemd/system/backrest.service
+install -m 0644 "${REPO_ROOT}/systemd/backrest.service" /etc/systemd/system/backrest.service
 systemctl daemon-reload
 
 cat <<'EOF'
