@@ -1,0 +1,54 @@
+[Unit]
+Description=Backrest (read-only snapshot browser for the restic repository)
+Documentation=https://github.com/garethgeorge/backrest
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/backrest/secrets.env
+
+[Service]
+Type=simple
+User=backrest
+Group=backrest
+EnvironmentFile=/etc/backrest/secrets.env
+# -restic-cmd points Backrest at the SAME restic binary already
+# installed for the main backup automation, rather than letting it
+# silently download and manage its own copy - one restic version in
+# use on this host, not two. Adjust the path if `restic` isn't at
+# /usr/bin/restic here (`which restic`).
+Environment="BACKREST_PORT=127.0.0.1:9898"
+Environment="BACKREST_CONFIG=/etc/backrest/config.json"
+Environment="BACKREST_DATA=/var/lib/backrest"
+Environment="BACKREST_RESTIC_COMMAND=/usr/bin/restic"
+Environment="XDG_CACHE_HOME=/var/lib/backrest/cache"
+ExecStart=/opt/backrest/bin/backrest
+Restart=on-failure
+RestartSec=5
+
+# Deliberately bound to 127.0.0.1 only (see BACKREST_PORT above) -
+# access it via an SSH tunnel (ssh -L 9898:127.0.0.1:9898 manny-01),
+# never by exposing the port directly. See README.md for the full
+# setup (first-run admin account, importing the existing repo as a
+# Repo without ever adding a Plan, and why its browse/restore
+# features should be avoided here).
+
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=backrest
+
+# Basic hardening - Backrest only needs its own config/data directory
+# and the system restic binary; it writes nothing to the main restic
+# automation's directories (/opt/restic, /var/log/restic, /etc/restic)
+# and isn't granted access to them.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/backrest
+
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target

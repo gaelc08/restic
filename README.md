@@ -172,6 +172,9 @@ underlying scripts directly, not through `resticctl`).
   `resticctl add-share`, which doesn't install them for you
 - `mail`/`sendmail` and/or `curl`, only if you enable email or webhook
   failure notifications (`RESTIC_NOTIFY_EMAIL` / `RESTIC_NOTIFY_WEBHOOK_URL`)
+- `curl`, `tar` and `sha256sum`, only if you install the optional
+  Backrest web UI (`bin/install-backrest.sh`) - see
+  [Browsing snapshots in a web UI](#browsing-snapshots-in-a-web-ui-backrest-optional)
 
 ## Install
 
@@ -465,6 +468,59 @@ shell function for use in other scripts:
 RESTIC_SNAPSHOTS_SOURCED=1 source /opt/restic/bin/restic-snapshots.sh
 restic_list_snapshots --json --host myhost
 ```
+
+### Browsing snapshots in a web UI (Backrest, optional)
+
+Once there are enough shares and enough history, `resticctl list`'s
+table gets long. [`bin/install-backrest.sh`](bin/install-backrest.sh)
+installs [Backrest](https://github.com/garethgeorge/backrest) as an
+optional, separate add-on - a small web UI, not wired into
+`install.sh` or any of the backup automation:
+
+```sh
+sudo bin/install-backrest.sh
+```
+
+It's pinned to one specific release and checksum (captured by hand,
+not fetched as "latest") rather than always tracking upstream, since
+this runs a third-party binary on a government backup server. It
+installs the binary, a dedicated unprivileged `backrest` system user,
+and `systemd/backrest.service` (bound to `127.0.0.1:9898` only), but
+does **not** start it - fill in `/etc/backrest/secrets.env` first
+(copy the repository/password/AWS credentials from
+`/etc/restic/{restic,secrets}.env` - kept in a separate file so
+Backrest's service user isn't given access to the main secrets file
+and whatever else ends up in it), then:
+
+```sh
+systemctl enable --now backrest.service
+ssh -L 9898:127.0.0.1:9898 <this host>   # from your workstation
+```
+
+Open `http://localhost:9898`; the first visit prompts you to create
+an admin username/password.
+
+**Use it read-only, exactly like the rest of this section:**
+- **Only "Add Repo" to import the existing repository. Never add a
+  "Plan"** - a Plan is what makes Backrest schedule its own
+  backups/retention, which would duplicate (and could fight with) the
+  dispatcher and timers already running here. Importing a Repo alone
+  just lets you browse what `resticctl list`/`restic snapshots`
+  already read safely.
+- **Stick to the snapshot list view; avoid "browse files" and
+  "restore" inside Backrest.** Those read actual file contents
+  (data blobs), and this repository's S3 **Glacier** storage class
+  means that's only meant to happen through the deliberately manual
+  `resticctl verify --target` workflow (see
+  [Restore verification](#restore-verification)) - a generic restore
+  UI doesn't know about that and may just hang or fail trying to read
+  data that needs a Glacier restore first.
+
+To upgrade Backrest later: download the new release's
+`backrest_Linux_x86_64.tar.gz` yourself, run `sha256sum` on it, and
+update `BACKREST_VERSION`/`BACKREST_SHA256` in
+`bin/install-backrest.sh` together after checking the release notes -
+never just re-run the installer against a moving "latest" tag.
 
 ## Removing snapshots manually
 
