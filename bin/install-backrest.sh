@@ -82,7 +82,15 @@ if ! getent passwd backrest >/dev/null; then
 fi
 
 echo "==> Installing binary to /opt/backrest/bin/backrest"
+# chmod explicitly rather than trusting mkdir -p's umask-derived mode:
+# these stay root:root (only the binary needs to be here), but must
+# still be traversable+executable by the separate `backrest` user that
+# runs it - a restrictive root umask (observed on manny-01: 0027, making
+# mkdir -p produce 750 directories) would otherwise block that with
+# "Permission denied" (systemd reports this as status=203/EXEC) even
+# though the binary itself is 0755.
 mkdir -p /opt/backrest/bin
+chmod 755 /opt/backrest /opt/backrest/bin
 install -m 0755 "${WORK_DIR}/backrest" /opt/backrest/bin/backrest
 
 echo "==> Creating config/data directories"
