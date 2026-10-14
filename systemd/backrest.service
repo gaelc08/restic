@@ -61,15 +61,18 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=backrest
 
-# Basic hardening - Backrest only writes to its own config/data
-# directory. It reads /etc/restic/{restic,secrets}.env (see the
-# EnvironmentFile= lines above) but writes nothing to /opt/restic,
-# /var/log/restic, or /etc/restic, and isn't granted write access to
-# any of them.
+# Basic hardening. ProtectSystem=full makes /usr, /boot and /etc
+# read-only for this service by default - Backrest needs to write its
+# own config.json (BACKREST_CONFIG=/etc/backrest/config.json above,
+# e.g. when creating the admin account or adding a repo through the
+# UI), so /etc/backrest is explicitly carved out here alongside its
+# data directory. It still reads /etc/restic/{restic,secrets}.env (see
+# the EnvironmentFile= lines above) but has no write access there, nor
+# to /opt/restic or /var/log/restic.
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/var/lib/backrest
+ReadWritePaths=/etc/backrest /var/lib/backrest
 
 TimeoutStartSec=30
 
