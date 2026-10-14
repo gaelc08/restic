@@ -15,6 +15,7 @@
 #   resticctl delete [--yes] [--no-prune] <snapshot-id...>
 #   resticctl verify --target <path> [share-path]
 #   resticctl report
+#   resticctl webreport
 #   resticctl version
 #   resticctl status
 #   resticctl help
@@ -192,6 +193,13 @@ Commands:
                                   repository metadata - safe to
                                   schedule daily.
 
+  webreport                       Regenerate the live snapshot web page
+                                  (full history per share, grouped -
+                                  see restic-webserver.service). Only
+                                  reads fast repository metadata - safe
+                                  to run anytime, and already run
+                                  hourly by restic-webreport.timer.
+
   version                        Show the deployed commit (VERSION file).
 
   status                         Show, per share: running now (with
@@ -260,6 +268,9 @@ case "$cmd" in
         ;;
     report)
         exec "${SCRIPT_DIR}/restic-report.sh" "$@"
+        ;;
+    webreport)
+        exec "${SCRIPT_DIR}/restic-webreport.sh" "$@"
         ;;
     version)
         if [[ -r "${SCRIPT_DIR}/VERSION" ]]; then

@@ -29,6 +29,7 @@ install -m 0755 "${SCRIPT_DIR}/bin/restic-snapshots.sh"       /opt/restic/bin/re
 install -m 0755 "${SCRIPT_DIR}/bin/restic-forget.sh"          /opt/restic/bin/restic-forget.sh
 install -m 0755 "${SCRIPT_DIR}/bin/restic-verify.sh"          /opt/restic/bin/restic-verify.sh
 install -m 0755 "${SCRIPT_DIR}/bin/restic-report.sh"          /opt/restic/bin/restic-report.sh
+install -m 0755 "${SCRIPT_DIR}/bin/restic-webreport.sh"       /opt/restic/bin/restic-webreport.sh
 install -m 0755 "${SCRIPT_DIR}/bin/restic-add-share.sh"       /opt/restic/bin/restic-add-share.sh
 install -m 0644 "${SCRIPT_DIR}/bin/restic-common.sh"          /opt/restic/bin/restic-common.sh
 install -m 0755 "${SCRIPT_DIR}/bin/resticctl"                 /opt/restic/bin/resticctl
@@ -84,6 +85,19 @@ echo "==> Creating cache/tmp directories"
 # there's nothing to pre-create here for it.
 mkdir -p /opt/restic/restic-cache /opt/restic/restic-tmp
 
+echo "==> Creating the web report's output directory and serving user"
+# restic-webserver.service (a plain Python http.server, no restic
+# access of its own) needs a dedicated user to run as, and a directory
+# it can read restic-webreport.service's output from. chmod explicitly
+# rather than trusting mkdir -p's umask-derived mode, same reasoning as
+# /opt/backrest's own history: a restrictive root umask could otherwise
+# leave this untraversable for the separate resticweb user.
+if ! getent passwd resticweb >/dev/null; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin resticweb
+fi
+mkdir -p /var/lib/restic-webreport
+chmod 755 /var/lib/restic-webreport
+
 echo "==> Installing config to /etc/restic (existing files left untouched)"
 mkdir -p /etc/restic
 for f in restic.env secrets.env shares.conf retention-policies.conf excludes.txt; do
@@ -131,6 +145,15 @@ install -m 0644 "${SCRIPT_DIR}/systemd/restic-maintenance.service" /etc/systemd/
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-maintenance.timer"   /etc/systemd/system/restic-maintenance.timer
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-report.service"      /etc/systemd/system/restic-report.service
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-report.timer"        /etc/systemd/system/restic-report.timer
+# restic-webreport.service/.timer regenerate a live HTML snapshot
+# listing hourly; restic-webserver.service (a separate, unprivileged
+# service, never granted any restic/secrets access) serves it
+# continuously - a readable alternative to `resticctl list` once
+# there are many shares/snapshots, without Backrest's limitation of
+# only ever grouping backups it ran itself (see README.md).
+install -m 0644 "${SCRIPT_DIR}/systemd/restic-webreport.service"   /etc/systemd/system/restic-webreport.service
+install -m 0644 "${SCRIPT_DIR}/systemd/restic-webreport.timer"     /etc/systemd/system/restic-webreport.timer
+install -m 0644 "${SCRIPT_DIR}/systemd/restic-webserver.service"   /etc/systemd/system/restic-webserver.service
 
 # restic-backup@.timer (one enabled instance per share, e.g.
 # restic-backup@finance.timer) is from the per-share-timer design this
@@ -190,6 +213,18 @@ it once RESTIC_NOTIFY_EMAIL and/or RESTIC_REPORT_EMAIL is set in
 restic.env:
     systemctl enable --now restic-report.timer
 
+A live web page listing every share's full snapshot history (grouped
+by share, not just the latest one) is also available - enable both the
+hourly regenerator and the server that actually serves it:
+    systemctl enable --now restic-webreport.timer
+    systemctl enable --now restic-webserver.service
+    resticctl webreport   # to regenerate immediately instead of waiting for the timer
+Then open http://<this host>:9900 (adjust the port in
+restic-webserver.service and your firewall if 9900 is taken). Nothing
+sensitive is exposed - the page only ever reads restic snapshot
+metadata, and restic-webserver.service has no access to /etc/restic,
+restic.env, or secrets.env at all.
+
 Restore verification (resticctl verify) has NO timer and is never
 scheduled - a real Glacier/tape restore can take minutes to many
 hours, so this is manual/on-demand only, by design. Every run needs an
@@ -216,6 +251,7 @@ Or drive everything through the resticctl CLI (installed onto PATH):
     resticctl maintenance
     resticctl verify --target /path/with/free/space
     resticctl report
+    resticctl webreport
     resticctl list --path /mnt/your-share
     resticctl delete <snapshot-id>
     resticctl version

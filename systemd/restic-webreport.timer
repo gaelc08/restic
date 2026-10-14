@@ -1,0 +1,15 @@
+[Unit]
+Description=Regenerate the restic snapshot web report hourly
+
+[Timer]
+# Hourly - this is a live page people check anytime, not a daily
+# digest, and regenerating it only reads fast repository metadata
+# (never archived Glacier data), so there's no real cost to keeping it
+# fresh often. Lower this further (e.g. every 15 minutes) if you want
+# tighter freshness during the backup window.
+OnCalendar=*:00:00
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

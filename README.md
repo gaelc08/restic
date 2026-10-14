@@ -177,6 +177,9 @@ underlying scripts directly, not through `resticctl`).
   manny-01 itself), only if you install the optional Backrest web UI -
   see
   [Browsing snapshots in a web UI](#browsing-snapshots-in-a-web-ui-backrest-optional)
+- `python3` (stdlib only, no extra packages), only if you enable
+  `restic-webserver.service` - see
+  [A live, grouped-by-share web report](#a-live-grouped-by-share-web-report)
 
 ## Install
 
@@ -536,6 +539,20 @@ installs [Backrest](https://github.com/garethgeorge/backrest) as an
 optional, separate add-on - a small web UI, not wired into
 `install.sh` or any of the backup automation.
 
+**Limitation found the hard way**: Backrest can only group/display
+snapshots under one of its own "Plans", and only ever associates a
+Plan with backups it triggered itself - confirmed empirically that a
+schedule-disabled Plan with a path matching an existing share still
+showed "No backups yet" for that share's pre-existing history. Since
+this automation's own snapshots were never created *through* Backrest,
+they all show up flatly under "_unassociated_" with no per-share
+grouping, however many Plans you define - Backrest isn't a good fit
+for "see my shares at a glance" unless you let it run the actual
+backups itself (which this project deliberately doesn't, to avoid
+duplicating/conflicting with the dispatcher and timers). See
+[A live, grouped-by-share web report](#a-live-grouped-by-share-web-report)
+below for the thing that actually solves that.
+
 **manny-01 has no internet access**, so `bin/install-backrest.sh`
 never downloads anything itself - it installs from a tarball vendored
 into `vendor/` ahead of time. Fetch and deploy it in two steps:
@@ -625,6 +642,35 @@ together (never just bump one, and never point at a moving "latest"
 tag), then repeat the fetch/deploy flow above - `fetch-backrest.sh`
 will pull the new version into `vendor/` and `install-backrest.sh`
 will verify and install it.
+
+### A live, grouped-by-share web report
+
+A small alternative/complement to Backrest: `bin/restic-webreport.sh`
+regenerates one static HTML page - every configured share in its own
+section, full snapshot history (date, ID, tags, size), newest first -
+and `restic-webserver.service` serves it continuously as a live page
+(reload to see the latest), not a file you download. Unlike Backrest,
+this reuses the exact same `restic snapshots --path <share>` grouping
+`resticctl list` already does correctly, so it actually groups by share
+for the *existing* history, with nothing to configure per share and no
+Plan/Repo concept to fight.
+
+```sh
+systemctl enable --now restic-webreport.timer     # regenerates the page hourly
+systemctl enable --now restic-webserver.service   # serves it continuously
+resticctl webreport                               # regenerate immediately instead of waiting for the timer
+```
+
+Open `http://<this host>:9900` (change the port in both
+`systemd/restic-webserver.service` and your firewall if 9900 is
+already taken). `restic-webserver.service` runs as its own dedicated,
+unprivileged `resticweb` user with **no access at all** to
+`/etc/restic`, `restic.env`, or `secrets.env` - it only ever reads the
+one HTML file `restic-webreport.service` (which does need the usual
+repository access, same as `resticctl list`) already wrote to
+`/var/lib/restic-webreport`. Both only ever read fast repository
+metadata (`restic snapshots`), never archived Glacier pack data, so
+there's no real cost to regenerating or reloading often.
 
 ## Removing snapshots manually
 

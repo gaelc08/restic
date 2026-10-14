@@ -1,0 +1,38 @@
+[Unit]
+Description=Serve the restic snapshot web report
+After=network-online.target restic-webreport.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=resticweb
+Group=resticweb
+# Python's stdlib http.server is enough for one static page refreshed
+# hourly by restic-webreport.timer - no application code of our own
+# needed just to serve a file. Bound to every interface (manny-01's
+# backup network is already protected, same reasoning as Backrest) -
+# change the port or bind to a specific interface IP instead of 0.0.0.0
+# if you want to narrow this.
+ExecStart=/usr/bin/python3 -m http.server 9900 --bind 0.0.0.0 --directory /var/lib/restic-webreport
+Restart=on-failure
+RestartSec=5
+
+Nice=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=restic-webserver
+
+# This user only ever reads /var/lib/restic-webreport/index.html
+# (written by restic-webreport.service, which runs as root) - no
+# access to /etc/restic, restic.env/secrets.env, or anything else
+# needed at all, unlike Backrest.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/var/lib/restic-webreport
+
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target
