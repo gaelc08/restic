@@ -94,7 +94,12 @@ chmod 755 /opt/backrest /opt/backrest/bin
 install -m 0755 "${WORK_DIR}/backrest" /opt/backrest/bin/backrest
 
 echo "==> Creating config/data directories"
-mkdir -p /etc/backrest /var/lib/backrest /var/lib/backrest/cache
+# restic-cache is Backrest's own RESTIC_CACHE_DIR (see
+# systemd/backrest.service) - kept separate from the real backups'
+# /opt/restic/restic-cache (root-owned) rather than sharing it, since
+# that one may not even be reachable by this unprivileged user
+# depending on the host's umask.
+mkdir -p /etc/backrest /var/lib/backrest /var/lib/backrest/cache /var/lib/backrest/restic-cache
 chown backrest:backrest /etc/backrest
 chown -R backrest:backrest /var/lib/backrest
 

@@ -32,6 +32,15 @@ Environment="BACKREST_CONFIG=/etc/backrest/config.json"
 Environment="BACKREST_DATA=/var/lib/backrest"
 Environment="BACKREST_RESTIC_COMMAND=/usr/bin/restic"
 Environment="XDG_CACHE_HOME=/var/lib/backrest/cache"
+# Overrides restic.env's own RESTIC_CACHE_DIR (a later Environment=
+# wins over an earlier EnvironmentFile= for the same key) - that
+# directory is root-owned for the real backups, and may not even be
+# traversable by this unprivileged user depending on the host's umask
+# (see /opt/backrest's own history earlier in this file's git log).
+# Giving Backrest its own separate cache here avoids needing any
+# shared access to root's cache directory at all, and avoids two
+# different UIDs writing into the same restic cache concurrently.
+Environment="RESTIC_CACHE_DIR=/var/lib/backrest/restic-cache"
 ExecStart=/opt/backrest/bin/backrest
 Restart=on-failure
 RestartSec=5
