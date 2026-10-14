@@ -41,6 +41,18 @@ Environment="XDG_CACHE_HOME=/var/lib/backrest/cache"
 # shared access to root's cache directory at all, and avoids two
 # different UIDs writing into the same restic cache concurrently.
 Environment="RESTIC_CACHE_DIR=/var/lib/backrest/restic-cache"
+# Overrides restic.env's own AWS_SHARED_CREDENTIALS_FILE (default
+# ~/.aws/credentials, i.e. /root/.aws/credentials for the real,
+# root-run backups) to a dedicated copy under /etc/restic instead.
+# Confirmed experimentally that ProtectHome=true below makes /root
+# entirely invisible to this service regardless of any ACL granted on
+# it - it's a mount-namespace-level hide, not a permission check, so
+# there is no way to grant access to the original path short of
+# disabling ProtectHome. bin/install-backrest.sh maintains this copy
+# (re-run it after rotating the real credentials); any repo using
+# AWS_PROFILE should reference this path in its own "Env", not the
+# original.
+Environment="AWS_SHARED_CREDENTIALS_FILE=/etc/restic/backrest-aws-credentials"
 ExecStart=/opt/backrest/bin/backrest
 Restart=on-failure
 RestartSec=5
