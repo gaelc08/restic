@@ -94,7 +94,12 @@ chmod 755 /opt/backrest /opt/backrest/bin
 install -m 0755 "${WORK_DIR}/backrest" /opt/backrest/bin/backrest
 
 echo "==> Creating config/data directories"
-mkdir -p /etc/backrest /var/lib/backrest /var/lib/backrest/cache
+# restic-cache is Backrest's own RESTIC_CACHE_DIR (see
+# systemd/backrest.service) - kept separate from the real backups'
+# /opt/restic/restic-cache (root-owned) rather than sharing it, since
+# that one may not even be reachable by this unprivileged user
+# depending on the host's umask.
+mkdir -p /etc/backrest /var/lib/backrest /var/lib/backrest/cache /var/lib/backrest/restic-cache
 chown backrest:backrest /etc/backrest
 chown -R backrest:backrest /var/lib/backrest
 
@@ -116,6 +121,50 @@ fi
 setfacl -m u:backrest:x /etc/restic
 setfacl -m u:backrest:r /etc/restic/secrets.env
 echo "    granted backrest read access to /etc/restic/secrets.env (getfacl /etc/restic/secrets.env to verify)"
+
+# RESTIC_PASSWORD_FILE and/or AWS_PROFILE's credentials file live
+# OUTSIDE /etc/restic/secrets.env itself (e.g. /etc/restic/password,
+# /root/.aws/credentials) when the file/profile mechanism is in use
+# instead of inline secrets - grant read access to those too, same as
+# above, rather than leaving this as a manual step discovered the hard
+# way through Backrest's own "Add Repo" errors. Sourcing
+# restic.env/secrets.env here only to read these variable names, not
+# to run anything with them.
+grant_ancestor_traversal() {
+    # Walks up from $1's parent directory to /, granting `backrest`
+    # execute (traverse) access at each level - needed however deep
+    # the actual path turns out to be (e.g. /root/.aws/credentials).
+    local dir
+    dir="$(dirname "$1")"
+    while [[ "$dir" != "/" && "$dir" != "." ]]; do
+        setfacl -m u:backrest:x "$dir"
+        dir="$(dirname "$dir")"
+    done
+}
+
+if [[ -r /etc/restic/restic.env ]]; then
+    # shellcheck disable=SC1091
+    source /etc/restic/restic.env
+    if [[ -n "${RESTIC_SECRETS_FILE:-}" && -r "$RESTIC_SECRETS_FILE" ]]; then
+        # shellcheck disable=SC1090
+        source "$RESTIC_SECRETS_FILE"
+    fi
+    if [[ -n "${RESTIC_PASSWORD_FILE:-}" ]]; then
+        grant_ancestor_traversal "$RESTIC_PASSWORD_FILE"
+        setfacl -m u:backrest:r "$RESTIC_PASSWORD_FILE"
+        echo "    granted backrest read access to RESTIC_PASSWORD_FILE (${RESTIC_PASSWORD_FILE})"
+    fi
+    if [[ -n "${AWS_PROFILE:-}" ]]; then
+        # Defaults to root's own credentials file, since none of the
+        # restic-backup@.service/restic-maintenance.service units set
+        # User= - they (and AWS_PROFILE) run as root. Adjust if that
+        # ever changes.
+        aws_creds_file="${AWS_SHARED_CREDENTIALS_FILE:-/root/.aws/credentials}"
+        grant_ancestor_traversal "$aws_creds_file"
+        setfacl -m u:backrest:r "$aws_creds_file"
+        echo "    granted backrest read access to AWS_PROFILE's credentials file (${aws_creds_file})"
+    fi
+fi
 
 echo "==> Installing systemd unit"
 install -m 0644 "${REPO_ROOT}/systemd/backrest.service" /etc/systemd/system/backrest.service
