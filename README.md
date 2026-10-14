@@ -672,6 +672,20 @@ repository access, same as `resticctl list`) already wrote to
 metadata (`restic snapshots`), never archived Glacier pack data, so
 there's no real cost to regenerating or reloading often.
 
+The page has a search box and a few sort options, all client-side
+(plain JavaScript embedded in the page itself, no external library or
+CDN - consistent with this host having no internet access):
+
+- Typing in the search box filters by share name, date, snapshot ID or
+  tag, live as you type - matching a share's name keeps every row in
+  that section, matching only a tag/date/ID hides the other rows.
+- Clicking a column header (Date/ID/Tags/Size) sorts that share's
+  table by that column; click again to reverse. The Size column is
+  parsed as an actual byte count (so `677.77 GiB` correctly sorts
+  before `1.98 TiB`), not compared as plain text.
+- The "Trier les shares par" dropdown reorders the share sections
+  themselves, by name, snapshot count, or most recent backup date.
+
 ## Removing snapshots manually
 
 `restic-forget.sh` is a safety-wrapped `restic forget` for ad-hoc
