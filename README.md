@@ -258,6 +258,21 @@ never sits in a process's environment (visible via `/proc/<pid>/environ`,
 `systemctl show`, core dumps, etc.), only in a file `restic` opens
 directly when it needs it.
 
+**`AWS_PROFILE` alone is not enough under systemd**: the default
+`~/.aws/credentials` lookup only resolves correctly when `$HOME` is
+set, which is true in an interactive root shell but is **not**
+guaranteed inside a systemd service that doesn't set `User=` (every
+`restic-backup@*`/`restic-maintenance`/etc. unit here, which all run
+as root without `User=`). Confirmed on manny-01: `resticctl backup
+<share>` run by hand worked, but the exact same configuration run via
+`restic-backup@<share>.service` failed with `s3.getCredentials: no
+credentials found` - `$HOME` was simply empty in the service's
+environment, so the AWS SDK had no path to resolve. Fix: always set
+`AWS_SHARED_CREDENTIALS_FILE` explicitly (e.g.
+`/root/.aws/credentials`) alongside `AWS_PROFILE` - see
+`config/secrets.env.example` - rather than relying on the `~/...`
+default to resolve the same way in both contexts.
+
 **Housekeeping**: any `/etc/restic/secrets.env.bak-*` files created
 while migrating between mechanisms still hold the old secrets in
 plaintext. Once you've confirmed `resticctl list` works on whichever
