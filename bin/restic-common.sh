@@ -71,9 +71,16 @@ export RESTIC_REPOSITORY
 [[ -n "${RESTIC_PASSWORD:-}" ]] && export RESTIC_PASSWORD
 [[ -n "${RESTIC_PASSWORD_FILE:-}" ]] && export RESTIC_PASSWORD_FILE
 [[ -n "${RESTIC_PASSWORD_COMMAND:-}" ]] && export RESTIC_PASSWORD_COMMAND
-export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-}"
-export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-}"
-export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-}"
+# Same rule as the password sources above, and for the same reason:
+# an AWS SDK's env-credentials provider treats AWS_ACCESS_KEY_ID/
+# AWS_SECRET_ACCESS_KEY being *set* (even to "") as "use these", and
+# either fails outright or never falls through to try AWS_PROFILE +
+# the shared credentials file - so forcing them to an empty string
+# when unset silently broke AWS_PROFILE-based auth. Only export
+# whichever mechanism is actually configured.
+[[ -n "${AWS_ACCESS_KEY_ID:-}" ]] && export AWS_ACCESS_KEY_ID
+[[ -n "${AWS_SECRET_ACCESS_KEY:-}" ]] && export AWS_SECRET_ACCESS_KEY
+[[ -n "${AWS_DEFAULT_REGION:-}" ]] && export AWS_DEFAULT_REGION
 # AWS_PROFILE (an alternative to the two keys above, read from a
 # shared credentials file instead) was previously set in restic.env
 # via plain assignment, never exported - so `source`-ing the file
