@@ -74,6 +74,17 @@ export RESTIC_REPOSITORY
 export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-}"
 export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-}"
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-}"
+# AWS_PROFILE (an alternative to the two keys above, read from a
+# shared credentials file instead) was previously set in restic.env
+# via plain assignment, never exported - so `source`-ing the file
+# only made it a local shell variable here, invisible to the `restic`
+# subprocess that actually needs it. Same bug class as
+# RESTIC_PASSWORD_FILE above: only export if actually set, since a
+# forced-empty AWS_PROFILE is a different (untested) case from it
+# being genuinely unset.
+[[ -n "${AWS_PROFILE:-}" ]] && export AWS_PROFILE
+[[ -n "${AWS_SHARED_CREDENTIALS_FILE:-}" ]] && export AWS_SHARED_CREDENTIALS_FILE
+[[ -n "${AWS_SESSION_TOKEN:-}" ]] && export AWS_SESSION_TOKEN
 
 # Global restic flags shared by every command (backup, forget, prune,
 # snapshots, check, ...): pack size and backend connection/storage
