@@ -160,9 +160,26 @@ if [[ -r /etc/restic/restic.env ]]; then
         # User= - they (and AWS_PROFILE) run as root. Adjust if that
         # ever changes.
         aws_creds_file="${AWS_SHARED_CREDENTIALS_FILE:-/root/.aws/credentials}"
-        grant_ancestor_traversal "$aws_creds_file"
-        setfacl -m u:backrest:r "$aws_creds_file"
-        echo "    granted backrest read access to AWS_PROFILE's credentials file (${aws_creds_file})"
+        # NOT an ACL grant, unlike RESTIC_PASSWORD_FILE above -
+        # confirmed experimentally (systemd-run reproducing
+        # backrest.service's exact hardening) that ProtectHome=true
+        # makes /root invisible to this service no matter what ACL is
+        # granted: ACLs are a DAC permission check, irrelevant once
+        # systemd's own mount namespace hides the path entirely before
+        # any permission check happens. The only fix is a copy living
+        # outside /root, under /etc/restic (never masked by
+        # ProtectHome). Acceptable since these credentials are
+        # static/rarely rotated - re-run this installer after rotating
+        # them to refresh the copy, and update any already-configured
+        # repo's own "Env" (AWS_SHARED_CREDENTIALS_FILE=...) to point
+        # here instead of the original path.
+        if [[ -r "$aws_creds_file" ]]; then
+            install -m 0600 -o backrest -g backrest "$aws_creds_file" /etc/restic/backrest-aws-credentials
+            echo "    copied AWS_PROFILE's credentials file to /etc/restic/backrest-aws-credentials"
+            echo "    (point this repo's own Env at AWS_SHARED_CREDENTIALS_FILE=/etc/restic/backrest-aws-credentials, not the original path)"
+        else
+            echo "WARNING: AWS_PROFILE is set but ${aws_creds_file} isn't readable - skipping the Backrest copy." >&2
+        fi
     fi
 fi
 
