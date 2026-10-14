@@ -243,7 +243,8 @@ for how that went wrong once already).
 | Repo password (file, preferred) | content of the path named by `RESTIC_PASSWORD_FILE` in `restic.env`/`secrets.env` (e.g. `/etc/restic/password`) | `600 root:root` | `restic` itself opens this path directly - never passes through our scripts' own variables |
 | AWS keys (inline) | `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` in `/etc/restic/secrets.env` | `600 root:root` | same as above |
 | AWS keys (profile, preferred) | the profile named by `AWS_PROFILE` in `restic.env`/`secrets.env`, inside the file named by `AWS_SHARED_CREDENTIALS_FILE` (defaults to `~/.aws/credentials` of whichever user runs the service - root here, since the systemd units don't set `User=`) | `600`, owner of that home dir | the AWS SDK inside `restic`'s S3 backend, resolved independently of our scripts |
-| Backrest's access to the above | no separate copy - `systemd/backrest.service` reads `/etc/restic/restic.env` and `/etc/restic/secrets.env` directly | unchanged (`secrets.env` stays `600 root:root`); the `backrest` service user gets a POSIX ACL grant (`getfacl /etc/restic/secrets.env` to inspect) | `backrest`'s own restic subprocess, exactly like the real backups |
+| Backrest's access to `secrets.env`/`RESTIC_PASSWORD_FILE` | no separate copy - `systemd/backrest.service` reads `/etc/restic/restic.env` and `/etc/restic/secrets.env` directly | unchanged (`secrets.env` stays `600 root:root`); the `backrest` service user gets a POSIX ACL grant (`getfacl /etc/restic/secrets.env` / `getfacl /etc/restic/password` to inspect) | `backrest`'s own restic subprocess, exactly like the real backups |
+| Backrest's access to `AWS_PROFILE`'s credentials | **a separate copy**, `/etc/restic/backrest-aws-credentials` (owned `backrest:backrest`, no ACL) | `600 backrest:backrest` | `backrest`'s restic subprocess, via `AWS_SHARED_CREDENTIALS_FILE=/etc/restic/backrest-aws-credentials` (overridden in `systemd/backrest.service`) |
 | Backrest's own login (unrelated secret) | bcrypt hash inside Backrest's `config.json` (`BACKREST_CONFIG=/etc/backrest/config.json`), set via its web UI on first visit | managed by Backrest itself | Backrest only - this is the password *to the dashboard*, not to the repository |
 
 **Only one of each pair (inline vs. file/profile) should actually be
@@ -260,6 +261,26 @@ plaintext. Once you've confirmed `resticctl list` works on whichever
 mechanism you kept, delete them (`rm /etc/restic/secrets.env.bak-*`) -
 they're not read by anything, just a second copy of the password/keys
 sitting on disk.
+
+**Why `AWS_PROFILE`'s credentials get copied instead of read in
+place, unlike everything else above**: `backrest.service` sets
+`ProtectHome=true`, which hides `/root` (and `/home`, `/run/user`)
+*entirely* from the service's private mount namespace - confirmed by
+reproducing the exact same hardening with `systemd-run` and watching
+`restic` fail with `s3.getCredentials: no credentials found` after a
+~30s AWS SDK timeout, even with a POSIX ACL correctly granted on
+`/root/.aws/credentials`. A mount-namespace hide happens before any
+permission check, so no ACL can fix it - the only way to give Backrest
+access is a copy living somewhere `ProtectHome` doesn't touch.
+**If you rotate these AWS credentials, refresh the copy** (no need to
+re-run the whole installer, and no service restart needed either -
+`restic` reads the file fresh on each invocation):
+```sh
+install -m 0600 -o backrest -g backrest /root/.aws/credentials /etc/restic/backrest-aws-credentials
+```
+(adjust the source path if `AWS_SHARED_CREDENTIALS_FILE` names a
+different one). `bin/install-backrest.sh` also refreshes this copy
+every time it's re-run, if you'd rather just do that.
 
 ## Configuration reference (`/etc/restic/restic.env`)
 
