@@ -485,7 +485,12 @@ outside git, so moving the service to new hardware (even keeping the
 same IP) needs one extra step first, run **from the old host, as root**:
 
 ```sh
-resticctl migrate-host --target root@<new-host>            # add --include-backrest if you still use it
+resticctl migrate-host --target root@<new-host>
+# Can't SSH as root on the target? Use --remote-sudo instead (runs the
+# remote side as `sudo rsync` - needs a NOPASSWD sudo rule for rsync on
+# the target, since rsync's transport has no terminal for sudo to
+# prompt on - see restic-migrate-host.sh's header comment):
+resticctl migrate-host --target <user>@<new-host> --remote-sudo
 ```
 
 This copies, over rsync+ssh: `restic.env`/`secrets.env`/`shares.conf`/

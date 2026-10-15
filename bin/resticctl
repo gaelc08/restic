@@ -10,7 +10,7 @@
 #   resticctl backup --background <share-name-or-path>
 #   resticctl backup-all
 #   resticctl add-share --type nfs|cifs --source <src> --mount <path> --policy <name> [...]
-#   resticctl migrate-host --target <user@host> [--include-backrest] [--dry-run]
+#   resticctl migrate-host --target <user@host> [--remote-sudo] [--include-backrest] [--dry-run]
 #   resticctl maintenance
 #   resticctl list [restic snapshots flags...]
 #   resticctl delete [--yes] [--no-prune] <snapshot-id...>
@@ -159,7 +159,7 @@ Commands:
                                   anything unusual. See
                                   restic-add-share.sh's header comment.
 
-  migrate-host --target <user@host> [--include-backrest] [--dry-run]
+  migrate-host --target <user@host> [--remote-sudo] [--include-backrest] [--dry-run]
                                   Hardware replacement/migration helper:
                                   copies everything this host's setup
                                   needs that does NOT live in git -
@@ -169,8 +169,15 @@ Commands:
                                   CIFS credentials= files referenced
                                   from /etc/fstab - to <user@host> over
                                   rsync+ssh. Run this FROM the old host,
-                                  as root. Prints the matching fstab
-                                  lines to review and add by hand
+                                  as root. --remote-sudo, if you can
+                                  only SSH into the target as a regular
+                                  user: runs the remote side as `sudo
+                                  rsync` instead (needs a NOPASSWD sudo
+                                  rule for rsync on the target - see
+                                  restic-migrate-host.sh's header
+                                  comment for why a password prompt
+                                  can't work here). Prints the matching
+                                  fstab lines to review and add by hand
                                   (never auto-appended), rather than
                                   install/mount/firewall/timers on the
                                   new host - see
