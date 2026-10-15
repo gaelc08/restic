@@ -118,9 +118,11 @@ FILES=(
 # host - CIFS credentials= files in particular live outside
 # /etc/restic entirely and are easy to forget.
 if [[ -r "$FSTAB_FILE" ]]; then
+    # sort -u: several shares commonly point at the same credentials
+    # file - no need to list (and rsync) it once per share.
     while IFS= read -r cred_path; do
         [[ -n "$cred_path" && -r "$cred_path" ]] && FILES+=("$cred_path")
-    done < <(grep -E '\scifs\s' "$FSTAB_FILE" | grep -oE 'credentials=[^,[:space:]]+' | cut -d= -f2-)
+    done < <(grep -E '\scifs\s' "$FSTAB_FILE" | grep -oE 'credentials=[^,[:space:]]+' | cut -d= -f2- | sort -u)
 fi
 
 echo "Copying to ${TARGET}:"
