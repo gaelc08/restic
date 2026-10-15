@@ -165,7 +165,8 @@ underlying scripts directly, not through `resticctl`).
 - `bash`, `systemd`, `logrotate`, `mountpoint`, `findmnt`, `flock`, `timeout`
   (util-linux/coreutils, almost always already present)
 - `jq` and `shuf` (coreutils) - used by `restic-snapshots.sh --latest-id`,
-  required by `restic-verify.sh` and `restic-report.sh`, and by
+  required by `restic-verify.sh`, `restic-report.sh` and
+  `restic-webreport.sh` (per-snapshot backup duration), and by
   `resticctl status` to read a running backup's progress
 - `nfs-utils` (for `mount.nfs4`) and/or `cifs-utils` (for `mount.cifs`),
   whichever share types you actually use - required by
@@ -257,6 +258,21 @@ this host was in before. Prefer the file/profile form: the secret then
 never sits in a process's environment (visible via `/proc/<pid>/environ`,
 `systemctl show`, core dumps, etc.), only in a file `restic` opens
 directly when it needs it.
+
+**`AWS_PROFILE` alone is not enough under systemd**: the default
+`~/.aws/credentials` lookup only resolves correctly when `$HOME` is
+set, which is true in an interactive root shell but is **not**
+guaranteed inside a systemd service that doesn't set `User=` (every
+`restic-backup@*`/`restic-maintenance`/etc. unit here, which all run
+as root without `User=`). Confirmed on manny-01: `resticctl backup
+<share>` run by hand worked, but the exact same configuration run via
+`restic-backup@<share>.service` failed with `s3.getCredentials: no
+credentials found` - `$HOME` was simply empty in the service's
+environment, so the AWS SDK had no path to resolve. Fix: always set
+`AWS_SHARED_CREDENTIALS_FILE` explicitly (e.g.
+`/root/.aws/credentials`) alongside `AWS_PROFILE` - see
+`config/secrets.env.example` - rather than relying on the `~/...`
+default to resolve the same way in both contexts.
 
 **Housekeeping**: any `/etc/restic/secrets.env.bak-*` files created
 while migrating between mechanisms still hold the old secrets in
@@ -679,10 +695,16 @@ CDN - consistent with this host having no internet access):
 - Typing in the search box filters by share name, date, snapshot ID or
   tag, live as you type - matching a share's name keeps every row in
   that section, matching only a tag/date/ID hides the other rows.
-- Clicking a column header (Date/ID/Tags/Size) sorts that share's
-  table by that column; click again to reverse. The Size column is
-  parsed as an actual byte count (so `677.77 GiB` correctly sorts
-  before `1.98 TiB`), not compared as plain text.
+- Each snapshot row also shows how long that backup actually took
+  (`Duration`), computed from restic's own `backup_start`/`backup_end`
+  - shown as "—" for older snapshots that predate restic storing that
+    data (same gap as the Size column, which comes from the same
+    "snapshot summary").
+- Clicking a column header (Date/ID/Tags/Size/Duration) sorts that
+  share's table by that column; click again to reverse. Size and
+  Duration sort by actual value (bytes / seconds), not as plain text -
+  so `677.77 GiB` correctly sorts before `1.98 TiB`, and `4m05s`
+  before `1h30m`.
 - The "Trier les shares par" dropdown reorders the share sections
   themselves, by name, snapshot count, or most recent backup date.
 

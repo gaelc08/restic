@@ -41,6 +41,25 @@ html_escape() {
     sed -e 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'
 }
 
+# format_duration_hm <seconds-or-empty> -> "1h23m" / "4m05s" / "17s" / "—"
+format_duration_hm() {
+    local secs="$1" h m s
+    if [[ -z "$secs" ]]; then
+        printf '\xe2\x80\x94'   # em dash: no backup_start/backup_end on this snapshot
+        return
+    fi
+    h=$(( secs / 3600 ))
+    m=$(( (secs % 3600) / 60 ))
+    s=$(( secs % 60 ))
+    if (( h > 0 )); then
+        printf '%dh%02dm' "$h" "$m"
+    elif (( m > 0 )); then
+        printf '%dm%02ds' "$m" "$s"
+    else
+        printf '%ds' "$s"
+    fi
+}
+
 # share_snapshots_table <path> - this share's full snapshot history, in
 # restic's own fixed-width table (ID, Time, Host, Tags, Paths, Size
 # columns), newest first. Same approach as restic-report.sh's
@@ -65,6 +84,26 @@ share_table_to_rows() {
         | tac
 }
 
+# share_snapshot_durations <path> - short_id -> backup duration in
+# seconds, one "id<TAB>seconds" line per snapshot that actually has
+# the data. Needs --json: the plain text table has no duration
+# column at all. Only backup_start/backup_end (restic's own "snapshot
+# summary", not on every historical snapshot - same gap as the Size
+# column above, which comes from the same summary) are used; jq's own
+# date parsing can't handle RFC3339 offsets/fractional seconds
+# reliably, so the two timestamps are handed to `date -d` instead,
+# which does.
+share_snapshot_durations() {
+    local path="$1" short_id start end start_epoch end_epoch
+    while IFS=$'\t' read -r short_id start end; do
+        [[ -z "$short_id" || -z "$start" || -z "$end" ]] && continue
+        start_epoch="$(date -d "$start" +%s 2>/dev/null)" || continue
+        end_epoch="$(date -d "$end" +%s 2>/dev/null)" || continue
+        printf '%s\t%d\n' "$short_id" "$(( end_epoch - start_epoch ))"
+    done < <(restic snapshots "${RESTIC_GLOBAL_ARGS[@]}" --path "$path" --json 2>>"$LOG_FILE" \
+        | jq -r '.[]? | [.short_id, (.summary.backup_start // ""), (.summary.backup_end // "")] | @tsv' 2>>"$LOG_FILE")
+}
+
 parse_shares_file
 
 SECTIONS=""
@@ -76,16 +115,23 @@ for i in "${!SHARE_PATHS[@]}"; do
     table="$(share_snapshots_table "$path")"
     rows="$(share_table_to_rows "$table")"
 
+    declare -A DURATIONS=()
+    while IFS=$'\t' read -r dur_id dur_secs; do
+        [[ -n "$dur_id" ]] && DURATIONS["$dur_id"]="$dur_secs"
+    done < <(share_snapshot_durations "$path")
+
     if [[ -z "$rows" ]]; then
         body="<p class=\"empty\">No snapshots found for this share.</p>"
     else
-        body='<table><thead><tr><th>Date</th><th>ID</th><th>Tags</th><th>Size</th></tr></thead><tbody>'
+        body='<table><thead><tr><th>Date</th><th>ID</th><th>Tags</th><th>Size</th><th>Duration</th></tr></thead><tbody>'
         while IFS=$'\t' read -r id time tags size; do
+            dur_secs="${DURATIONS[$id]:-}"
+            dur_display="$(format_duration_hm "$dur_secs")"
             id="$(printf '%s' "$id" | html_escape)"
             time="$(printf '%s' "$time" | html_escape)"
             tags="$(printf '%s' "$tags" | html_escape)"
             size="$(printf '%s' "$size" | html_escape)"
-            body+="<tr><td>${time}</td><td class=\"id\">${id}</td><td class=\"tags\">${tags}</td><td class=\"size\">${size}</td></tr>"
+            body+="<tr><td>${time}</td><td class=\"id\">${id}</td><td class=\"tags\">${tags}</td><td class=\"size\">${size}</td><td class=\"duration\" data-seconds=\"${dur_secs}\">${dur_display}</td></tr>"
         done <<<"$rows"
         body+='</tbody></table>'
     fi
@@ -140,7 +186,7 @@ cat > "$OUTPUT_FILE" <<REPORTEOF
   th.sort-desc::after { content: " \25BC"; }
   td.id, td.tags { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .8rem; color: #555; }
   @media (prefers-color-scheme: dark) { td.id, td.tags { color: #aaa; } }
-  td.size { text-align: right; white-space: nowrap; }
+  td.size, td.duration { text-align: right; white-space: nowrap; }
   tr.hidden { display: none; }
   .empty { color: #999; font-style: italic; margin: 0; }
   footer { color: #999; font-size: .75rem; margin-top: 1.5rem; }
@@ -175,15 +221,25 @@ ${SECTIONS}
     return parseFloat(m[1]) * (SIZE_UNITS[m[2]] || 1);
   }
 
-  function sortRowsByColumn(table, colIndex, isSize, ascending) {
+  // Duration cells carry the exact seconds in data-seconds (restic's
+  // own "1h23m"/"4m05s" text isn't reliably sortable as a string -
+  // same reasoning as Size's byte parsing below, simpler here since
+  // the number is already computed server-side).
+  function cellSortValue(cell, mode) {
+    if (mode === "size") { return parseSize(cell.textContent.trim()); }
+    if (mode === "duration") { return parseFloat(cell.dataset.seconds || "0") || 0; }
+    return cell.textContent.trim();
+  }
+
+  function sortRowsByColumn(table, colIndex, mode, ascending) {
     var tbody = table.tBodies[0];
     if (!tbody) { return; }
     var rows = Array.prototype.slice.call(tbody.rows);
     rows.sort(function (a, b) {
-      var av = a.cells[colIndex].textContent.trim();
-      var bv = b.cells[colIndex].textContent.trim();
-      var cmp = isSize
-        ? parseSize(av) - parseSize(bv)
+      var av = cellSortValue(a.cells[colIndex], mode);
+      var bv = cellSortValue(b.cells[colIndex], mode);
+      var cmp = (mode === "size" || mode === "duration")
+        ? av - bv
         : av.localeCompare(bv, undefined, { numeric: true, sensitivity: "base" });
       return ascending ? cmp : -cmp;
     });
@@ -198,8 +254,11 @@ ${SECTIONS}
         ths.forEach(function (other) { other.classList.remove("sort-asc", "sort-desc"); other.dataset.sortDir = ""; });
         th.dataset.sortDir = ascending ? "asc" : "desc";
         th.classList.add(ascending ? "sort-asc" : "sort-desc");
-        var isSize = th.classList.contains("size") || th.textContent.trim().toLowerCase().indexOf("size") !== -1;
-        sortRowsByColumn(table, colIndex, isSize, ascending);
+        var headerText = th.textContent.trim().toLowerCase();
+        var mode = headerText.indexOf("size") !== -1
+          ? "size"
+          : (headerText.indexOf("duration") !== -1 ? "duration" : "text");
+        sortRowsByColumn(table, colIndex, mode, ascending);
       });
     });
   });
