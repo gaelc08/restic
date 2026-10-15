@@ -492,15 +492,25 @@ resticctl migrate-host --target root@<new-host>
 # --identity picks the key the SSH *connection* presents (this script
 # itself still has to run as root locally, to read the 600-permission
 # secrets files - that's independent of which key the network
-# connection authenticates with), and --remote-sudo runs the remote
-# side as `sudo rsync` so files still land with the right ownership
-# (needs a NOPASSWD sudo rule for rsync on the target, since rsync's
-# transport has no terminal for sudo to prompt on - see
-# restic-migrate-host.sh's header comment):
+# connection authenticates with). --stage (the default when --target
+# isn't root@...) copies into a plain directory under that user's own
+# home - no remote privilege needed - and prints the one `sudo rsync`
+# command to run yourself, interactively, on the target afterwards:
 resticctl migrate-host --target WBX669@<new-host> \
-    --identity /path/to/a/key/WBX669/already/authorized/on/the/target \
-    --remote-sudo
+    --identity /path/to/a/key/WBX669/already/authorized/on/the/target
 ```
+
+`--remote-sudo` is the unattended alternative - it runs the remote side
+of rsync itself as `sudo rsync`, so files land at their final path in
+one command with no manual step after. It needs a NOPASSWD sudo rule
+for rsync on the target *and* for sudo there to not require a tty - in
+practice this often doesn't hold wherever sudo policy is centrally
+managed (LDAP/SSSD) rather than a local `/etc/sudoers.d` file: that's
+exactly what happened migrating manny-01 itself - a local NOPASSWD
+rule was added and `visudo -c` validated it, but sudo still demanded a
+password, because the central policy was the one actually in effect.
+`--stage` has no such dependency (it needs no remote sudo at all for
+the copy itself), which is why it's the default.
 
 This copies, over rsync+ssh: `restic.env`/`secrets.env`/`shares.conf`/
 `retention-policies.conf`/`excludes.txt` (whatever paths they're
