@@ -486,11 +486,20 @@ same IP) needs one extra step first, run **from the old host, as root**:
 
 ```sh
 resticctl migrate-host --target root@<new-host>
-# Can't SSH as root on the target? Use --remote-sudo instead (runs the
-# remote side as `sudo rsync` - needs a NOPASSWD sudo rule for rsync on
-# the target, since rsync's transport has no terminal for sudo to
-# prompt on - see restic-migrate-host.sh's header comment):
-resticctl migrate-host --target <user>@<new-host> --remote-sudo
+
+# More realistically, on a host where root has no SSH identity of its
+# own (by policy) and root login is disabled on the target too:
+# --identity picks the key the SSH *connection* presents (this script
+# itself still has to run as root locally, to read the 600-permission
+# secrets files - that's independent of which key the network
+# connection authenticates with), and --remote-sudo runs the remote
+# side as `sudo rsync` so files still land with the right ownership
+# (needs a NOPASSWD sudo rule for rsync on the target, since rsync's
+# transport has no terminal for sudo to prompt on - see
+# restic-migrate-host.sh's header comment):
+resticctl migrate-host --target WBX669@<new-host> \
+    --identity /path/to/a/key/WBX669/already/authorized/on/the/target \
+    --remote-sudo
 ```
 
 This copies, over rsync+ssh: `restic.env`/`secrets.env`/`shares.conf`/
