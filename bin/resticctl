@@ -10,7 +10,7 @@
 #   resticctl backup --background <share-name-or-path>
 #   resticctl backup-all
 #   resticctl add-share --type nfs|cifs --source <src> --mount <path> --policy <name> [...]
-#   resticctl migrate-host --target <user@host> [--identity <key-file>] [--remote-sudo] [--include-backrest] [--dry-run]
+#   resticctl migrate-host --target <user@host> [--identity <key-file>] [--remote-sudo | --stage [<dir-name>]] [--include-backrest] [--dry-run]
 #   resticctl maintenance
 #   resticctl list [restic snapshots flags...]
 #   resticctl delete [--yes] [--no-prune] <snapshot-id...>
@@ -159,7 +159,8 @@ Commands:
                                   anything unusual. See
                                   restic-add-share.sh's header comment.
 
-  migrate-host --target <user@host> [--identity <key-file>] [--remote-sudo] [--include-backrest] [--dry-run]
+  migrate-host --target <user@host> [--identity <key-file>]
+               [--remote-sudo | --stage [<dir-name>]] [--include-backrest] [--dry-run]
                                   Hardware replacement/migration helper:
                                   copies everything this host's setup
                                   needs that does NOT live in git -
@@ -177,22 +178,42 @@ Commands:
                                   this migration, or an existing one for
                                   the --target user) while this script
                                   still runs as root locally to read the
-                                  600-permission secrets files. --remote-
-                                  sudo, if you can only SSH into the
-                                  target as a regular user: runs the
-                                  remote side as `sudo rsync` instead
-                                  (needs a NOPASSWD sudo rule for rsync
-                                  on the target - see
-                                  restic-migrate-host.sh's header
-                                  comment for why a password prompt
-                                  can't work here). Prints the matching
-                                  fstab lines to review and add by hand
-                                  (never auto-appended), rather than
-                                  install/mount/firewall/timers on the
-                                  new host - see
-                                  restic-migrate-host.sh's header
-                                  comment for the full list of what
-                                  still needs doing there.
+                                  600-permission secrets files.
+
+                                  Reaching the target as a regular user
+                                  (rather than root) means getting the
+                                  files from there into their final,
+                                  root-owned paths needs its own
+                                  privilege step too - two ways:
+                                  --stage [<dir-name>] (the default):
+                                  copies into <dir-name> (default
+                                  restic-migrate-staging) under that
+                                  user's own home - no remote privilege
+                                  needed - then prints one `sudo rsync`
+                                  command to run yourself, interactively,
+                                  on the target. --remote-sudo instead
+                                  runs the remote side of rsync itself as
+                                  `sudo rsync`, fully unattended, but
+                                  needs a NOPASSWD sudo rule for rsync on
+                                  the target AND for sudo there to not
+                                  require a tty - in practice this often
+                                  doesn't hold wherever sudo policy is
+                                  centrally managed (LDAP/SSSD) rather
+                                  than a local /etc/sudoers.d file, where
+                                  it fails with "sudo: a password is
+                                  required" even with a validated local
+                                  NOPASSWD rule - see
+                                  restic-migrate-host.sh's header comment
+                                  for why a password prompt can't work
+                                  there anyway (rsync's transport has no
+                                  terminal for sudo to prompt on). Prints
+                                  the matching fstab lines to review and
+                                  add by hand (never auto-appended),
+                                  rather than install/mount/firewall/
+                                  timers on the new host - see
+                                  restic-migrate-host.sh's header comment
+                                  for the full list of what still needs
+                                  doing there.
 
   maintenance                    Apply each share's retention policy
                                   (forget), prune, and check.
