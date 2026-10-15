@@ -21,7 +21,19 @@
 #     there is nothing local to move.
 #
 # Usage:
-#   restic-migrate-host.sh --target <user@host> [--include-backrest] [--dry-run]
+#   restic-migrate-host.sh --target <user@host> [--remote-sudo] [--include-backrest] [--dry-run]
+#
+# --remote-sudo: use when you can't SSH as root on the target and must
+# connect as a regular user instead - runs the remote side as `sudo
+# rsync` so the copied files still land with the right ownership under
+# /etc, /root/.aws, etc. Requires that user to actually have sudo
+# rights on the target; if sudo there prompts for a password, this
+# will hang (rsync's transport is a raw binary pipe, so unlike a normal
+# interactive SSH session it has no terminal for sudo to prompt on,
+# and forcing one with `ssh -t` corrupts rsync's own protocol instead
+# of fixing this) - the fix is a narrow NOPASSWD rule on the target,
+# not a workaround here:
+#   <user> ALL=(root) NOPASSWD: /usr/bin/rsync
 
 set -uo pipefail
 
@@ -38,16 +50,17 @@ fi
 
 usage() {
     cat <<EOF >&2
-Usage: $(basename "$0") --target <user@host> [--include-backrest] [--dry-run]
+Usage: $(basename "$0") --target <user@host> [--remote-sudo] [--include-backrest] [--dry-run]
 EOF
 }
 
-TARGET="" INCLUDE_BACKREST=0 DRY_RUN=0
+TARGET="" INCLUDE_BACKREST=0 DRY_RUN=0 REMOTE_SUDO=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --target) TARGET="$2"; shift 2 ;;
         --include-backrest) INCLUDE_BACKREST=1; shift ;;
+        --remote-sudo) REMOTE_SUDO=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
@@ -57,9 +70,12 @@ done
 [[ -n "$TARGET" ]] || { echo "--target <user@host> is required" >&2; usage; exit 2; }
 
 RSYNC_OPTS=(-avR -e ssh)
+if [[ $REMOTE_SUDO -eq 1 ]]; then
+    RSYNC_OPTS+=("--rsync-path=sudo rsync")
+fi
 [[ $DRY_RUN -eq 1 ]] && RSYNC_OPTS+=(--dry-run)
 
-log_info "===== restic-migrate-host starting: target=${TARGET} dry_run=${DRY_RUN} include_backrest=${INCLUDE_BACKREST} ====="
+log_info "===== restic-migrate-host starting: target=${TARGET} dry_run=${DRY_RUN} include_backrest=${INCLUDE_BACKREST} remote_sudo=${REMOTE_SUDO} ====="
 
 # --- Core config + secrets (never in git, read from this host's own
 # configured paths rather than hardcoded /etc/restic/* - in case any
