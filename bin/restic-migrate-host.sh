@@ -110,10 +110,10 @@ if [[ -n "$IDENTITY" && ! -r "$IDENTITY" ]]; then
     die "--identity file not readable: $IDENTITY"
 fi
 
-SSH_CMD="ssh"
-[[ -n "$IDENTITY" ]] && SSH_CMD="ssh -i ${IDENTITY} -o IdentitiesOnly=yes"
+SSH_OPTS=(ssh)
+[[ -n "$IDENTITY" ]] && SSH_OPTS=(ssh -i "$IDENTITY" -o IdentitiesOnly=yes)
 
-RSYNC_OPTS=(-avR -e "$SSH_CMD")
+RSYNC_OPTS=(-avR -e "${SSH_OPTS[*]}")
 if [[ $REMOTE_SUDO -eq 1 ]]; then
     RSYNC_OPTS+=("--rsync-path=sudo rsync")
 fi
@@ -126,7 +126,20 @@ fi
 # A relative rsync destination (no leading "/") lands relative to the
 # login's home directory, same as a plain `scp` without one.
 REMOTE_DEST="/"
-[[ $STAGE -eq 1 ]] && REMOTE_DEST="${STAGE_DIR}/"
+REMOTE_STAGE_PATH=""
+if [[ $STAGE -eq 1 ]]; then
+    REMOTE_DEST="${STAGE_DIR}/"
+    # Resolved once, up front, rather than printing "~/${STAGE_DIR}"
+    # in the final instructions: ~ expands in whatever shell runs that
+    # printed command, which is wrong the moment it's not actually a
+    # --target-user shell (e.g. already su'd to root, where ~ is
+    # /root, not --target's home - exactly what happened migrating
+    # manny-01 itself). An absolute path has no such ambiguity.
+    REMOTE_STAGE_PATH="$("${SSH_OPTS[@]}" "$TARGET" "echo \$HOME/${STAGE_DIR}" 2>>"$LOG_FILE")"
+    if [[ -z "$REMOTE_STAGE_PATH" ]]; then
+        die "could not resolve \$HOME on ${TARGET} over SSH - check connectivity/identity before retrying"
+    fi
+fi
 
 log_info "===== restic-migrate-host starting: target=${TARGET} identity=${IDENTITY:-<default>} dry_run=${DRY_RUN} include_backrest=${INCLUDE_BACKREST} remote_sudo=${REMOTE_SUDO} stage=${STAGE} stage_dir=${STAGE_DIR} ====="
 
@@ -186,13 +199,15 @@ if [[ $STAGE -eq 1 ]]; then
     cat <<EOF
 
 ===== One more step on ${TARGET} before anything else below =====
-Everything above landed under ~/${STAGE_DIR}/ (${TARGET}'s own home,
-no remote privilege needed for that) rather than its real final
-path. Log into ${TARGET} yourself and, as root (interactively - this
-is the normal kind of sudo prompt, not the one that doesn't work over
-rsync's pipe), move it into place and clean up the staging copy:
-    sudo rsync -a ~/${STAGE_DIR}/ /
-    rm -rf ~/${STAGE_DIR}
+Everything above landed under ${REMOTE_STAGE_PATH}/ (${TARGET}'s own
+home, no remote privilege needed for that) rather than its real final
+path. On ${TARGET} itself, as root (interactively - this is the
+normal kind of sudo prompt, not the one that doesn't work over
+rsync's pipe), move it into place and clean up the staging copy -
+this exact command works regardless of which shell/user you run it
+from, since the path below is already absolute:
+    sudo rsync -a ${REMOTE_STAGE_PATH}/ /
+    rm -rf ${REMOTE_STAGE_PATH}
 EOF
 fi
 
