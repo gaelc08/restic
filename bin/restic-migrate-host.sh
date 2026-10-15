@@ -21,7 +21,21 @@
 #     there is nothing local to move.
 #
 # Usage:
-#   restic-migrate-host.sh --target <user@host> [--remote-sudo] [--include-backrest] [--dry-run]
+#   restic-migrate-host.sh --target <user@host> [--identity <key-file>]
+#       [--remote-sudo] [--include-backrest] [--dry-run]
+#
+# This script itself must run as root (it reads 600-permission secrets
+# files), but that does NOT mean the SSH connection has to authenticate
+# as root - and on a host where root never has its own network
+# identity (no root SSH key, by policy), it can't. --identity
+# <key-file> picks which private key the SSH *connection* presents
+# instead, independent of which OS user is running this script: root
+# can read a key file belonging to anyone (e.g. one just generated for
+# this one-off migration, or an existing key for the --target user) and
+# hand it to ssh with -i, the same way `sudo -u otheruser` doesn't
+# require guessing their password - owning the file is enough. The
+# `<user>@` in --target still selects which account to log in as; the
+# key just has to be one that account authorized_keys accepts.
 #
 # --remote-sudo: use when you can't SSH as root on the target and must
 # connect as a regular user instead - runs the remote side as `sudo
@@ -50,15 +64,16 @@ fi
 
 usage() {
     cat <<EOF >&2
-Usage: $(basename "$0") --target <user@host> [--remote-sudo] [--include-backrest] [--dry-run]
+Usage: $(basename "$0") --target <user@host> [--identity <key-file>] [--remote-sudo] [--include-backrest] [--dry-run]
 EOF
 }
 
-TARGET="" INCLUDE_BACKREST=0 DRY_RUN=0 REMOTE_SUDO=0
+TARGET="" IDENTITY="" INCLUDE_BACKREST=0 DRY_RUN=0 REMOTE_SUDO=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --target) TARGET="$2"; shift 2 ;;
+        --identity) IDENTITY="$2"; shift 2 ;;
         --include-backrest) INCLUDE_BACKREST=1; shift ;;
         --remote-sudo) REMOTE_SUDO=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
@@ -68,14 +83,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$TARGET" ]] || { echo "--target <user@host> is required" >&2; usage; exit 2; }
+if [[ -n "$IDENTITY" && ! -r "$IDENTITY" ]]; then
+    die "--identity file not readable: $IDENTITY"
+fi
 
-RSYNC_OPTS=(-avR -e ssh)
+SSH_CMD="ssh"
+[[ -n "$IDENTITY" ]] && SSH_CMD="ssh -i ${IDENTITY} -o IdentitiesOnly=yes"
+
+RSYNC_OPTS=(-avR -e "$SSH_CMD")
 if [[ $REMOTE_SUDO -eq 1 ]]; then
     RSYNC_OPTS+=("--rsync-path=sudo rsync")
 fi
 [[ $DRY_RUN -eq 1 ]] && RSYNC_OPTS+=(--dry-run)
 
-log_info "===== restic-migrate-host starting: target=${TARGET} dry_run=${DRY_RUN} include_backrest=${INCLUDE_BACKREST} remote_sudo=${REMOTE_SUDO} ====="
+log_info "===== restic-migrate-host starting: target=${TARGET} identity=${IDENTITY:-<default>} dry_run=${DRY_RUN} include_backrest=${INCLUDE_BACKREST} remote_sudo=${REMOTE_SUDO} ====="
 
 # --- Core config + secrets (never in git, read from this host's own
 # configured paths rather than hardcoded /etc/restic/* - in case any
