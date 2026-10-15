@@ -27,6 +27,7 @@ installed:
 resticctl backup [--manual] [share-path]  # backup all shares, or just one
 resticctl backup-all            # start every share's backup now, in parallel, in the background
 resticctl add-share --type nfs|cifs --source <src> --mount <path> --policy <name>  # provision a new share, see below
+resticctl migrate-host --target <user@host>  # copy this host's secrets/config to new hardware, see below
 resticctl maintenance           # apply retention + prune + check
 resticctl list [flags...]       # list snapshots (restic snapshots flags)
 resticctl delete [flags...]     # remove snapshot(s), see below
@@ -474,6 +475,36 @@ automatically (existing shares need their fstab line and
 `mount -o remount` updated by hand). Keep it consistent across shares
 on the same network path rather than mixing values without a measured
 reason to.
+
+### Moving to new hardware
+
+`update-manny.sh`/`install.sh` only deploy the *code* - they deliberately
+never touch an `/etc/restic/*` file that already exists, never touch
+`/etc/fstab`, firewall rules, or Backrest's own state. All of that lives
+outside git, so moving the service to new hardware (even keeping the
+same IP) needs one extra step first, run **from the old host, as root**:
+
+```sh
+resticctl migrate-host --target root@<new-host>            # add --include-backrest if you still use it
+```
+
+This copies, over rsync+ssh: `restic.env`/`secrets.env`/`shares.conf`/
+`retention-policies.conf`/`excludes.txt` (whatever paths they're
+actually configured to in `restic.env`, not assumed defaults),
+`AWS_SHARED_CREDENTIALS_FILE` if set, and any CIFS `credentials=` files
+referenced from `/etc/fstab` - then prints the matching CIFS/NFS
+`/etc/fstab` lines for you to review and add on the new host by hand
+(never auto-appended - blindly concatenating fstab files risks
+duplicating or conflicting with entries the new host already has for
+its own local disks). `--dry-run` previews without copying anything.
+
+Still to do on the new host afterwards (`restic-migrate-host.sh`'s own
+output repeats this list): run `update-manny.sh` to deploy the code
+(it won't overwrite what was just copied), add the reviewed fstab
+lines and `mount -a`, re-open the firewall ports this host had open,
+re-run `bin/install-backrest.sh` if Backrest was migrated, and enable
+the timers. Nothing about the restic repository itself needs
+migrating - it's remote S3/Glacier, not local state.
 
 ### Maintenance and `--max-repack-size 0`
 

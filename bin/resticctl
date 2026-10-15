@@ -10,6 +10,7 @@
 #   resticctl backup --background <share-name-or-path>
 #   resticctl backup-all
 #   resticctl add-share --type nfs|cifs --source <src> --mount <path> --policy <name> [...]
+#   resticctl migrate-host --target <user@host> [--include-backrest] [--dry-run]
 #   resticctl maintenance
 #   resticctl list [restic snapshots flags...]
 #   resticctl delete [--yes] [--no-prune] <snapshot-id...>
@@ -158,6 +159,25 @@ Commands:
                                   anything unusual. See
                                   restic-add-share.sh's header comment.
 
+  migrate-host --target <user@host> [--include-backrest] [--dry-run]
+                                  Hardware replacement/migration helper:
+                                  copies everything this host's setup
+                                  needs that does NOT live in git -
+                                  restic.env/secrets.env/shares.conf/
+                                  retention-policies.conf/excludes.txt,
+                                  AWS_SHARED_CREDENTIALS_FILE, and any
+                                  CIFS credentials= files referenced
+                                  from /etc/fstab - to <user@host> over
+                                  rsync+ssh. Run this FROM the old host,
+                                  as root. Prints the matching fstab
+                                  lines to review and add by hand
+                                  (never auto-appended), rather than
+                                  install/mount/firewall/timers on the
+                                  new host - see
+                                  restic-migrate-host.sh's header
+                                  comment for the full list of what
+                                  still needs doing there.
+
   maintenance                    Apply each share's retention policy
                                   (forget), prune, and check.
 
@@ -253,6 +273,9 @@ case "$cmd" in
         ;;
     add-share)
         exec "${SCRIPT_DIR}/restic-add-share.sh" "$@"
+        ;;
+    migrate-host)
+        exec "${SCRIPT_DIR}/restic-migrate-host.sh" "$@"
         ;;
     maintenance)
         exec "${SCRIPT_DIR}/restic-maintenance.sh" "$@"
