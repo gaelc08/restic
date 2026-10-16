@@ -70,21 +70,28 @@ format_bytes() {
     }'
 }
 
-# backup_progress_json <unit> -> the most recent restic --json "status"
-# line (message_type=="status": percent_done, bytes_done, total_bytes,
-# files_done, total_files, seconds_elapsed, seconds_remaining,
-# error_count - see restic's JSON output docs) for that systemd unit,
-# or nothing if none found in its recent journal. -n 500 bounds the
-# journal read; restic emits a status line roughly once a second, so
-# the tail of a long-running backup's journal almost always has one
-# within the last 500 lines even once interleaved with this script's
-# own log_info/log_error lines (which is why we grep down to
-# JSON-looking lines first - jq errors out on the whole stream
-# otherwise, it doesn't just skip a bad line).
+# backup_progress_json <share-name> -> the most recent restic --json
+# "status" line (message_type=="status": percent_done, bytes_done,
+# total_bytes, files_done, total_files, seconds_elapsed,
+# seconds_remaining, error_count - see restic's JSON output docs) for
+# that share's currently-running backup, or nothing if none found.
+#
+# Reads restic-backup.sh's own per-share progress file
+# (RESTIC_STATUS_DIR/progress-<share>.json), not journalctl: restic's
+# own stdout/stderr is explicitly redirected straight into
+# $BACKUP_LOG_FILE by restic-backup.sh (so that file, not the systemd
+# journal, is what actually gets restic's --json lines), and that log
+# is shared across every restic-backup@<share> instance - once more
+# than one runs at a time, there's no share/path field in restic's own
+# "status" messages to tell whose line is whose. The per-share file is
+# truncated fresh at the start of each run (tee's default without -a),
+# so just taking its last matching line is unambiguous - no window
+# size to bound, unlike journalctl's.
 backup_progress_json() {
-    local unit="$1"
-    journalctl -u "$unit" -o cat -n 500 --no-pager 2>/dev/null \
-        | grep -o '{.*}' 2>/dev/null \
+    local share="$1"
+    local progress_file="${status_dir}/progress-${share}.json"
+    [[ -r "$progress_file" ]] || return 0
+    grep -o '{.*}' "$progress_file" 2>/dev/null \
         | jq -c 'select(.message_type == "status")' 2>/dev/null \
         | tail -1
 }
@@ -366,7 +373,7 @@ case "$cmd" in
             unit="restic-backup@${name}.service"
             state="$(systemctl show "$unit" --property=ActiveState --value 2>/dev/null)"
             if [[ "$state" == "activating" || "$state" == "active" ]]; then
-                json="$(backup_progress_json "$unit")"
+                json="$(backup_progress_json "$name")"
                 if [[ -n "$json" ]]; then
                     pct="$(jq -r '(.percent_done * 100) | floor' <<<"$json" 2>/dev/null)"
                     # restic's own percent_done/seconds_remaining can
