@@ -29,20 +29,21 @@ ExecStart=/opt/restic/bin/restic-backup.sh %i
 # *inside this cgroup only* - this specific backup fails, instead of
 # the whole host OOMing and (as actually happened) rebooting.
 #
-# Sized for manny-01's planned 64G (RESTIC_BACKUP_MAX_PARALLEL=4, see
-# restic.env): reserve ~16G for the OS/page cache/other restic jobs,
-# leaving a 48G budget for this slice (restic-backup.slice) - split
-# four ways that's 12G/16G per instance, rounded up a bit so one
-# heavier share doesn't get throttled just because the others are also
-# running. The slice's own 40G/48G stays the real backstop if several
-# instances turn out heavier than expected at once (see that file).
+# Sized for manny-01's hardware migration to a ~500G physical host
+# (RESTIC_BACKUP_MAX_PARALLEL=8, see restic.env, covering every
+# currently configured share running at once): reserve ~50G for the
+# OS/page cache/other restic jobs, leaving a 450G budget for this
+# slice (restic-backup.slice) - split eight ways that's 56G/instance,
+# with MemoryHigh left a bit lower (40G) so one heavier share throttles
+# before hitting its own hard cap. The slice's own 400G/450G stays the
+# real backstop if several instances turn out heavier than expected at
+# once (see that file).
 #
-# IMPORTANT: these values assume the host actually has 64G. Do NOT
-# deploy this alongside RESTIC_BACKUP_MAX_PARALLEL=4 on a host that is
-# still at 32G or less - that recreates the OOM/reboot this was
-# written to fix. If the RAM upgrade hasn't landed yet, keep
-# RESTIC_BACKUP_MAX_PARALLEL=1 and use smaller values here (e.g. the
-# 24G/28G this replaced, sized for 32G - see git history).
+# IMPORTANT: these values assume the host actually has ~500G. Do NOT
+# deploy this alongside RESTIC_BACKUP_MAX_PARALLEL=8 on a host with
+# less - that recreates the OOM/reboot these limits exist to prevent.
+# For the previous, 64G-VM sizing (RESTIC_BACKUP_MAX_PARALLEL=4,
+# MemoryHigh=12G/MemoryMax=16G, slice 40G/48G), see git history.
 #
 # To confirm actual usage once running: `systemctl status
 # restic-backup@<share>.service` while it runs shows current/peak
@@ -50,8 +51,8 @@ ExecStart=/opt/restic/bin/restic-backup.sh %i
 # here and in restic-backup.slice to match, and redeploy - or
 # `systemctl edit restic-backup@.service` for a quick local override
 # without waiting on that.
-MemoryHigh=12G
-MemoryMax=16G
+MemoryHigh=40G
+MemoryMax=56G
 Slice=restic-backup.slice
 
 # Run as a low-priority, low-io-priority background job so it doesn't

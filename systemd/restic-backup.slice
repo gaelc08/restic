@@ -17,12 +17,12 @@ Description=Combined resource limits for all restic-backup@<share> instances
 # confirming shares are small enough for that) still can't take down
 # the whole host, only this slice's own processes.
 #
-# Same 64G-host sizing note as restic-backup@.service's own
+# Same host-sizing note as restic-backup@.service's own
 # MemoryHigh/MemoryMax - keep both in sync when you adjust either.
 # IMPORTANT: do not deploy this (paired with
-# RESTIC_BACKUP_MAX_PARALLEL=4) on a host that doesn't actually have
-# 64G yet - see the warning in restic-backup@.service.
+# RESTIC_BACKUP_MAX_PARALLEL=8) on a host that doesn't actually have
+# ~500G - see the warning in restic-backup@.service.
 
 [Slice]
-MemoryHigh=40G
-MemoryMax=48G
+MemoryHigh=400G
+MemoryMax=450G
