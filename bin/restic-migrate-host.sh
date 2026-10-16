@@ -110,10 +110,10 @@ if [[ -n "$IDENTITY" && ! -r "$IDENTITY" ]]; then
     die "--identity file not readable: $IDENTITY"
 fi
 
-SSH_CMD="ssh"
-[[ -n "$IDENTITY" ]] && SSH_CMD="ssh -i ${IDENTITY} -o IdentitiesOnly=yes"
+SSH_OPTS=(ssh)
+[[ -n "$IDENTITY" ]] && SSH_OPTS=(ssh -i "$IDENTITY" -o IdentitiesOnly=yes)
 
-RSYNC_OPTS=(-avR -e "$SSH_CMD")
+RSYNC_OPTS=(-avR -e "${SSH_OPTS[*]}")
 if [[ $REMOTE_SUDO -eq 1 ]]; then
     RSYNC_OPTS+=("--rsync-path=sudo rsync")
 fi
@@ -126,7 +126,20 @@ fi
 # A relative rsync destination (no leading "/") lands relative to the
 # login's home directory, same as a plain `scp` without one.
 REMOTE_DEST="/"
-[[ $STAGE -eq 1 ]] && REMOTE_DEST="${STAGE_DIR}/"
+REMOTE_STAGE_PATH=""
+if [[ $STAGE -eq 1 ]]; then
+    REMOTE_DEST="${STAGE_DIR}/"
+    # Resolved once, up front, rather than printing "~/${STAGE_DIR}"
+    # in the final instructions: ~ expands in whatever shell runs that
+    # printed command, which is wrong the moment it's not actually a
+    # --target-user shell (e.g. already su'd to root, where ~ is
+    # /root, not --target's home - exactly what happened migrating
+    # manny-01 itself). An absolute path has no such ambiguity.
+    REMOTE_STAGE_PATH="$("${SSH_OPTS[@]}" "$TARGET" "echo \$HOME/${STAGE_DIR}" 2>>"$LOG_FILE")"
+    if [[ -z "$REMOTE_STAGE_PATH" ]]; then
+        die "could not resolve \$HOME on ${TARGET} over SSH - check connectivity/identity before retrying"
+    fi
+fi
 
 log_info "===== restic-migrate-host starting: target=${TARGET} identity=${IDENTITY:-<default>} dry_run=${DRY_RUN} include_backrest=${INCLUDE_BACKREST} remote_sudo=${REMOTE_SUDO} stage=${STAGE} stage_dir=${STAGE_DIR} ====="
 
@@ -183,17 +196,56 @@ grep -E '\s(cifs|nfs4?)\s' "$FSTAB_FILE" || echo "(none found in ${FSTAB_FILE})"
 log_info "===== restic-migrate-host finished ====="
 
 if [[ $STAGE -eq 1 ]]; then
+    # Deliberately NOT "rsync -a ${REMOTE_STAGE_PATH}/ /": that syncs
+    # directory *metadata* too, including for directories that already
+    # exist on the target (/, /etc, /root, ...) - and since the
+    # staging copy was written by a non-root SSH user, those
+    # directories are owned by that user, not root. `rsync -a` would
+    # then overwrite /etc's (and even /'s) real ownership with that
+    # user's, handing them to a regular account - confirmed live
+    # migrating manny-01 itself. A plain per-file `cp` only ever
+    # touches the file being copied; `mkdir -p` on an already-existing
+    # directory is a silent no-op, so no pre-existing directory's
+    # ownership/permissions are ever touched, only newly-created ones
+    # (made by root here, so root-owned with a normal umask).
+    MOVE_SCRIPT=""
+    for f in "${FILES[@]}"; do
+        MOVE_SCRIPT+="mkdir -p \"\$(dirname '$f')\" && cp '${REMOTE_STAGE_PATH}${f}' '$f' && chown root:root '$f' && chmod 600 '$f'
+"
+    done
+    if [[ $INCLUDE_BACKREST -eq 1 && ${#BACKREST_FILES[@]} -gt 0 ]]; then
+        for f in "${BACKREST_FILES[@]}"; do
+            if [[ -d "$f" ]]; then
+                MOVE_SCRIPT+="mkdir -p '$f' && cp -R '${REMOTE_STAGE_PATH}${f}/.' '$f/' && find '$f' -exec chown root:root {} + && find '$f' -type d -exec chmod 700 {} + && find '$f' -type f -exec chmod 600 {} +
+"
+            else
+                MOVE_SCRIPT+="mkdir -p \"\$(dirname '$f')\" && cp '${REMOTE_STAGE_PATH}${f}' '$f' && chown root:root '$f' && chmod 600 '$f'
+"
+            fi
+        done
+    fi
+
     cat <<EOF
 
 ===== One more step on ${TARGET} before anything else below =====
-Everything above landed under ~/${STAGE_DIR}/ (${TARGET}'s own home,
-no remote privilege needed for that) rather than its real final
-path. Log into ${TARGET} yourself and, as root (interactively - this
-is the normal kind of sudo prompt, not the one that doesn't work over
-rsync's pipe), move it into place and clean up the staging copy:
-    sudo rsync -a ~/${STAGE_DIR}/ /
-    rm -rf ~/${STAGE_DIR}
+Everything above landed under ${REMOTE_STAGE_PATH}/ (${TARGET}'s own
+home, no remote privilege needed for that) rather than its real final
+path. On ${TARGET} itself, as root (interactively - this is the
+normal kind of sudo prompt, not the one that doesn't work over
+rsync's pipe), move each file into place individually (never touching
+any pre-existing directory's own ownership/permissions) and clean up
+the staging copy - this exact command works regardless of which
+shell/user you run it from, since every path below is already
+absolute:
+    sudo bash <<'MOVESCRIPT'
+${MOVE_SCRIPT}MOVESCRIPT
+    rm -rf ${REMOTE_STAGE_PATH}
 EOF
+    if [[ $INCLUDE_BACKREST -eq 1 && ${#BACKREST_FILES[@]} -gt 0 ]]; then
+        echo "(Backrest's files above are left root:root/0600 for now -"
+        echo " bin/install-backrest.sh, step 4 below, resets them to"
+        echo " whatever backrest:backrest/ACLs it actually needs.)"
+    fi
 fi
 
 cat <<EOF
