@@ -165,9 +165,19 @@ for i in "${!VALID_SHARE_PATHS[@]}"; do
 
     BACKUP_ARGS+=("$path")
 
+    # Also tee restic's own output into a per-share progress file (one
+    # per share, truncated fresh - tee's default, since it's given
+    # without -a - at the start of each run) so `resticctl status` can
+    # find a given share's latest --json status line unambiguously.
+    # $LOG_FILE alone can't serve that: every restic-backup@<share>
+    # instance appends to the exact same file, so once more than one
+    # runs at a time their JSON lines interleave with no share/path
+    # field of their own to tell them apart - confirmed on manny-01
+    # once parallelism went from 4 to 8 shares at once.
+    PROGRESS_FILE="${RESTIC_STATUS_DIR}/progress-${share_name}.json"
     log_info "backing up share '$share_name' (policy=$policy): running restic ${BACKUP_ARGS[*]}"
-    restic "${BACKUP_ARGS[@]}" >>"$LOG_FILE" 2>&1
-    rc=$?
+    restic "${BACKUP_ARGS[@]}" 2>&1 | tee "$PROGRESS_FILE" >>"$LOG_FILE"
+    rc=${PIPESTATUS[0]}
 
     if [[ $rc -eq 0 ]]; then
         log_info "share '$share_name' backup completed successfully"
