@@ -93,7 +93,36 @@ cleanup_netapp_share() {
         _netapp_active_svm=""
     fi
 }
-trap cleanup_netapp_share EXIT
+
+# --- "is a backup of this share running right now" marker -------------------
+#
+# resticctl status can only ask systemd whether
+# restic-backup@<share>.service is active - which tells it nothing
+# about a manual, ad-hoc run (`resticctl backup --manual <share>`,
+# `restic-backup.sh` invoked directly), since those run as a plain
+# process, never through that systemd template instance. Without this,
+# resticctl status falls back to whatever this share's last *completed*
+# run recorded, silently stale for as long as a current manual run is
+# in progress - confirmed on manny-01, where it kept showing a finished
+# run from several minutes earlier while a second manual run of the
+# same share was actively under way.
+#
+# A plain marker file (this share's own PID) that resticctl checks for
+# liveness with `kill -0` rather than just existence, so a leftover
+# marker from a run that was killed outright (SIGKILL, power loss - the
+# EXIT trap below never fires for those) doesn't wrongly read as
+# "still running" forever.
+_running_marker=""
+mark_share_running() {
+    _running_marker="${RESTIC_STATUS_DIR}/backup-$1.running"
+    echo "$$" > "$_running_marker" 2>/dev/null || true
+}
+clear_share_running() {
+    [[ -n "$_running_marker" ]] && rm -f "$_running_marker"
+    _running_marker=""
+}
+
+trap 'cleanup_netapp_share; clear_share_running' EXIT
 
 RUN_TAG="${RESTIC_BACKUP_TAG:-scheduled}"
 ONLY_PATH=""
@@ -178,6 +207,7 @@ for i in "${!VALID_SHARE_PATHS[@]}"; do
     path="${VALID_SHARE_PATHS[$i]}"
     policy="${VALID_SHARE_POLICIES[$i]}"
     share_name="$(basename "$path")"
+    mark_share_running "$share_name"
 
     BACKUP_ARGS=(
         backup
@@ -222,6 +252,7 @@ for i in "${!VALID_SHARE_PATHS[@]}"; do
             FAILED=1
             FAILED_SHARES+=("$share_name")
             write_status_file "backup-${share_name}" "failure" "$msg"
+            clear_share_running
             continue
         fi
         _netapp_active_svm="$svm"
@@ -235,6 +266,7 @@ for i in "${!VALID_SHARE_PATHS[@]}"; do
             FAILED_SHARES+=("$share_name")
             write_status_file "backup-${share_name}" "failure" "$msg"
             cleanup_netapp_share
+            clear_share_running
             continue
         fi
         _netapp_active_mount="$path"
@@ -273,6 +305,7 @@ for i in "${!VALID_SHARE_PATHS[@]}"; do
         FAILED_SHARES+=("$share_name")
         write_status_file "backup-${share_name}" "failure" "$msg"
     fi
+    clear_share_running
 done
 
 END_TS=$(date +%s)

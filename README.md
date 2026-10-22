@@ -995,6 +995,18 @@ configured in `restic.env`:
    "never run" until it ran again, even though it had actually
    succeeded hours earlier.
 
+   Similarly, `resticctl status`'s "running" detection normally asks
+   systemd whether `restic-backup@<share>.service` is active, which
+   says nothing about an ad-hoc run (`resticctl backup --manual
+   <share>`, or `restic-backup.sh` invoked directly) - those never go
+   through that systemd template instance. While processing a share,
+   `restic-backup.sh` also leaves its own PID in
+   `${RESTIC_STATUS_DIR}/backup-<share>.running`; `resticctl status`
+   checks that marker (confirming the PID is actually still alive with
+   `kill -0`, so a run that was killed outright rather than exiting
+   normally doesn't wrongly read as "still running" forever) whenever
+   the systemd check alone says otherwise.
+
 2. **Email and/or webhook notifications**, opt-in:
    ```sh
    RESTIC_NOTIFY_EMAIL="ops-team@example.lu"
