@@ -372,7 +372,24 @@ case "$cmd" in
         for name in "${share_names[@]}"; do
             unit="restic-backup@${name}.service"
             state="$(systemctl show "$unit" --property=ActiveState --value 2>/dev/null)"
-            if [[ "$state" == "activating" || "$state" == "active" ]]; then
+            is_running=0
+            [[ "$state" == "activating" || "$state" == "active" ]] && is_running=1
+            # An ad-hoc run (`resticctl backup --manual <share>`,
+            # restic-backup.sh invoked directly) never goes through
+            # that systemd template instance, so the check above alone
+            # always misses it - confirmed on manny-01, where status
+            # kept showing a finished run from minutes earlier while a
+            # manual run of the same share was actively in progress.
+            # restic-backup.sh leaves its own PID in this marker file
+            # for exactly as long as it's processing this share; `kill
+            # -0` confirms that PID is still alive rather than trusting
+            # a leftover marker from a run that was killed outright
+            # (the script's own EXIT trap never fires for that).
+            if [[ $is_running -eq 0 && -r "${status_dir}/backup-${name}.running" ]]; then
+                marker_pid="$(cat "${status_dir}/backup-${name}.running" 2>/dev/null)"
+                [[ "$marker_pid" =~ ^[0-9]+$ ]] && kill -0 "$marker_pid" 2>/dev/null && is_running=1
+            fi
+            if [[ $is_running -eq 1 ]]; then
                 json="$(backup_progress_json "$name")"
                 if [[ -n "$json" ]]; then
                     pct="$(jq -r '(.percent_done * 100) | floor' <<<"$json" 2>/dev/null)"
