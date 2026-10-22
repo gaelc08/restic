@@ -13,8 +13,22 @@
 # given cluster instead uses a per-SVM password, this project doesn't
 # support that yet - ask for it if you need it.
 #
+# IMPORTANT: use the SVM's hostname here, not its LIF's raw IP. ONTAP's
+# self-signed certificate on a data LIF is issued with the SVM name as
+# its subject/SAN (confirmed on a real cluster: `curl ... https://<ip>`
+# fails with "SSL: certificate subject name 'SVMCIGOUVZ1001' does not
+# match target host name '<ip>'") - and this project never disables
+# TLS verification to work around that. Instead, add a line to
+# /etc/hosts (or an internal DNS record) resolving that exact name to
+# the LIF's IP, e.g.:
+#   10.110.136.43   SVMCIGOUVZ1001
+# then point this file at the name, as below. Use
+# `openssl s_client -connect <ip>:443 -showcerts </dev/null 2>/dev/null
+# | openssl x509 -noout -subject -ext subjectAltName` to confirm the
+# exact name a given LIF's certificate expects.
+#
 # Blank lines and lines starting with # are ignored. Copy to
 # /etc/restic/netapp-svms.conf.
 
-svm-cs3-bnl-dev     https://10.110.136.44
-SVMCIGOUVZ1001      https://10.110.136.43
+svm-cs3-bnl-dev     https://svm-cs3-bnl-dev
+SVMCIGOUVZ1001      https://SVMCIGOUVZ1001
