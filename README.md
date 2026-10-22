@@ -511,6 +511,18 @@ a live database file without its own fsync/quiesce.
    name to that same data LIF's URL (several shares/volumes commonly
    share one SVM, hence this being a separate file from the per-share
    mapping below rather than repeating the URL on every line there).
+   Use the SVM's **hostname**, not the LIF's raw IP: ONTAP's
+   self-signed certificate on a data LIF has the SVM name as its
+   subject/SAN, so connecting by IP fails TLS verification (confirmed
+   on a real cluster: `curl ... https://<ip>/...` ->
+   `SSL: certificate subject name 'SVMCIGOUVZ1001' does not match
+   target host name '<ip>'`) - and this project never disables TLS
+   verification to work around that. Add a line to `/etc/hosts` (or an
+   internal DNS record) resolving that exact name to the LIF's IP
+   instead, e.g. `10.110.136.43   SVMCIGOUVZ1001`. Confirm the name a
+   given LIF's certificate expects with
+   `openssl s_client -connect <ip>:443 -showcerts </dev/null 2>/dev/null
+   | openssl x509 -noout -subject -ext subjectAltName`.
 3. Copy `config/netapp-volumes.conf.example` to
    `/etc/restic/netapp-volumes.conf` and add a line mapping the
    share's local mount point to its actual SVM and volume name on the
