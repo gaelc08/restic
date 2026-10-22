@@ -506,6 +506,18 @@ a live database file without its own fsync/quiesce.
    Enable the ONTAP REST API's management service on the same data LIF
    already used for that SVM's NFS/CIFS backup traffic (no new network
    path needed) - not a separate cluster management LIF.
+
+   Assigning the user a role (e.g. `vsadmin-backup`) is not by itself
+   enough for REST calls to succeed - confirmed on a real cluster: the
+   exact same user/role/password that worked on one SVM got a REST
+   `401 User is not authorized` on another, because that role also
+   needs to be explicitly granted access to the `rest` web service on
+   *that* SVM (`vserver services web access show -vserver <svm>` lists
+   what's currently granted there; compare it against an SVM where this
+   already works). Grant it with:
+   ```
+   vserver services web access create -vserver <svm> -name rest -role vsadmin-backup
+   ```
 2. Copy `config/netapp-svms.conf.example` to
    `/etc/restic/netapp-svms.conf` and add a line per SVM mapping its
    name to that same data LIF's URL (several shares/volumes commonly
@@ -526,9 +538,16 @@ a live database file without its own fsync/quiesce.
 3. Copy `config/netapp-volumes.conf.example` to
    `/etc/restic/netapp-volumes.conf` and add a line mapping the
    share's local mount point to its actual SVM and volume name on the
-   NetApp side (`volume show -vserver <svm> -volume <volume>` to
-   confirm - these do not have to match the local mount point's own
-   name or path).
+   NetApp side - these do not have to match the local mount point's
+   own name or path, and sometimes don't: confirmed on a real cluster,
+   two shares mounted as `.../butlerdev` and `.../edrop` turned out to
+   be the volumes `svm_cs3_bnl_dev_butlerdev` and
+   `svm_cs3_bnl_dev_edrop`, not `butlerdev`/`edrop`. Don't guess from
+   the mount path - look up the exact volume name ONTAP-side for every
+   share, matching on the junction-path each is actually mounted at:
+   ```
+   volume show -vserver <svm> -fields volume,junction-path
+   ```
 4. Set `NETAPP_API_USER`/`NETAPP_API_PASSWORD` (or
    `NETAPP_API_PASSWORD_FILE`) and `NETAPP_API_CACERT` in
    `secrets.env` - see `config/secrets.env.example`. TLS verification
