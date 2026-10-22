@@ -47,6 +47,23 @@ relative_time() {
     fi
 }
 
+# until_time <systemd timestamp> -> "in 9h" / "in 15m" / "unknown"
+# Counterpart to relative_time, for a time still ahead (a timer's next
+# elapse) rather than behind (a job's last completion).
+until_time() {
+    local ts="$1" then_epoch now diff
+    [[ -z "$ts" || "$ts" == "n/a" ]] && { echo "unknown"; return; }
+    then_epoch="$(date -d "$ts" +%s 2>/dev/null)" || { echo "unknown"; return; }
+    now="$(date +%s)"
+    diff=$((then_epoch - now))
+    ((diff < 0)) && diff=0
+    if   ((diff < 60));    then echo "in ${diff}s"
+    elif ((diff < 3600));  then echo "in $((diff / 60))m"
+    elif ((diff < 86400)); then echo "in $((diff / 3600))h$(( (diff % 3600) / 60 ))m"
+    else                        echo "in $((diff / 86400))d"
+    fi
+}
+
 # format_duration <seconds> -> "6h47m" / "59m" / "?"
 format_duration() {
     local secs="$1" h m
@@ -366,6 +383,8 @@ case "$cmd" in
         fi
 
         echo "=== Backups ==="
+        next_backup="$(systemctl show restic-backup.timer --property=NextElapseUSecRealtime --value 2>/dev/null)"
+        echo "  next scheduled run: $(until_time "$next_backup")"
         if [[ ${#share_names[@]} -eq 0 ]]; then
             echo "  (cannot read SHARES_FILE: $shares_file)"
         fi
@@ -468,6 +487,8 @@ case "$cmd" in
 
         echo
         echo "=== Maintenance ==="
+        next_maint="$(systemctl show restic-maintenance.timer --property=NextElapseUSecRealtime --value 2>/dev/null)"
+        echo "  next scheduled run: $(until_time "$next_maint")"
         maint_state="$(systemctl show restic-maintenance.service --property=ActiveState --value 2>/dev/null)"
         if [[ "$maint_state" == "activating" || "$maint_state" == "active" ]]; then
             since="$(systemctl show restic-maintenance.service --property=ActiveEnterTimestamp --value 2>/dev/null)"
