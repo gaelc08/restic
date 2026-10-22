@@ -1,0 +1,20 @@
+# Maps each NetApp SVM (vserver) to the ONTAP REST API base URL to
+# reach it on - the same data LIF already used for that SVM's
+# NFS/CIFS backup traffic (management service enabled on it), not a
+# separate cluster management LIF. One line per SVM, not per share:
+# several shares/volumes commonly live on the same SVM and share one
+# line here.
+#
+# "<SVM name>  <https://host-or-ip-of-that-SVM's-LIF>"
+#
+# The user/password used against every SVM's API is the same
+# everywhere (NETAPP_API_USER/NETAPP_API_PASSWORD in secrets.env) -
+# only the endpoint differs, which is what this file is for. If a
+# given cluster instead uses a per-SVM password, this project doesn't
+# support that yet - ask for it if you need it.
+#
+# Blank lines and lines starting with # are ignored. Copy to
+# /etc/restic/netapp-svms.conf.
+
+svm-cs3-bnl-dev     https://10.110.136.44
+SVMCIGOUVZ1001      https://10.110.136.43

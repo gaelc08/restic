@@ -148,6 +148,7 @@ fi
 log_info "shares: ${VALID_SHARE_PATHS[*]}"
 
 netapp_load_mapping
+netapp_load_svm_urls
 
 RESTIC_BACKUP_LOCK_TIMEOUT="${RESTIC_BACKUP_LOCK_TIMEOUT:-300}"
 if ! acquire_lock "$RESTIC_BACKUP_LOCK_TIMEOUT" shared; then
