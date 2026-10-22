@@ -217,9 +217,11 @@ for i in "${!VALID_SHARE_PATHS[@]}"; do
 
         log_info "share '$share_name': snapshotting NetApp volume ${svm}:${volume} (snapshot '${netapp_snap_name}') before backup"
         if ! netapp_create_snapshot "$svm" "$volume" "$netapp_snap_name"; then
-            log_error "share '$share_name' backup FAILED (could not create NetApp snapshot ${netapp_snap_name} on ${svm}:${volume})"
+            msg="share '$share_name' backup FAILED (could not create NetApp snapshot ${netapp_snap_name} on ${svm}:${volume})"
+            log_error "$msg"
             FAILED=1
             FAILED_SHARES+=("$share_name")
+            write_status_file "backup-${share_name}" "failure" "$msg"
             continue
         fi
         _netapp_active_svm="$svm"
@@ -227,9 +229,11 @@ for i in "${!VALID_SHARE_PATHS[@]}"; do
         _netapp_active_snapname="$netapp_snap_name"
 
         if ! mount --bind "${path}/.snapshot/${netapp_snap_name}" "$path" 2>>"$LOG_FILE"; then
-            log_error "share '$share_name' backup FAILED (bind-mounting the NetApp snapshot onto $path failed)"
+            msg="share '$share_name' backup FAILED (bind-mounting the NetApp snapshot onto $path failed)"
+            log_error "$msg"
             FAILED=1
             FAILED_SHARES+=("$share_name")
+            write_status_file "backup-${share_name}" "failure" "$msg"
             cleanup_netapp_share
             continue
         fi
@@ -253,15 +257,21 @@ for i in "${!VALID_SHARE_PATHS[@]}"; do
     cleanup_netapp_share
 
     if [[ $rc -eq 0 ]]; then
-        log_info "share '$share_name' backup completed successfully"
+        msg="share '$share_name' backup completed successfully"
+        log_info "$msg"
+        write_status_file "backup-${share_name}" "success" "$msg"
     elif [[ $rc -eq 3 ]]; then
-        log_warn "share '$share_name' backup completed with warnings (some source files could not be read, exit 3)"
+        msg="share '$share_name' backup completed with warnings (some source files could not be read, exit 3)"
+        log_warn "$msg"
         WARNED=1
         WARNED_SHARES+=("$share_name")
+        write_status_file "backup-${share_name}" "warning" "$msg"
     else
-        log_error "share '$share_name' backup FAILED (exit $rc)"
+        msg="share '$share_name' backup FAILED (exit $rc)"
+        log_error "$msg"
         FAILED=1
         FAILED_SHARES+=("$share_name")
+        write_status_file "backup-${share_name}" "failure" "$msg"
     fi
 done
 

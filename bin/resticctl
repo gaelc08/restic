@@ -411,19 +411,40 @@ case "$cmd" in
                 # long before anyone wants to check "did last night's
                 # run succeed" - this would wrongly show "never run"
                 # for a share that actually backed up fine hours ago.
-                # restic-backup.sh's own completion line in
-                # backup.log is what the script wrote itself and is
-                # already proven safe for the exact span we care about
-                # at the normal logrotate retention (90 days).
-                last_line="$(grep -E "share '${name}' backup (completed successfully|completed with warnings|FAILED)" "$backup_log" 2>/dev/null | tail -1)"
-                if [[ -z "$last_line" ]]; then
-                    printf "  %-22s idle      never run\n" "$name"
-                else
-                    ts="$(sed -n 's/^\[\([^]]*\)\].*/\1/p' <<<"$last_line")"
+                #
+                # Read restic-backup.sh's own per-share status file
+                # (write_status_file "backup-<share>" ..., same
+                # STATUS=/TIMESTAMP=/SUMMARY= format as
+                # maintenance.status below) rather than grepping
+                # backup_log for the share's last completion line - a
+                # share that last ran right before backup_log's own
+                # logrotate rotation would otherwise wrongly show
+                # "never run" too (confirmed on manny-01: every share
+                # but the one that happened to run right after
+                # midnight's rotation went back to "never run").
+                status_file="${status_dir}/backup-${name}.status"
+                if [[ -r "$status_file" ]]; then
+                    status="$(grep '^STATUS=' "$status_file" | cut -d= -f2-)"
+                    timestamp="$(grep '^TIMESTAMP=' "$status_file" | cut -d= -f2-)"
+                    summary="$(grep '^SUMMARY=' "$status_file" | cut -d= -f2-)"
                     result="ok"
-                    [[ "$last_line" == *"completed with warnings"* ]] && result="warning"
-                    [[ "$last_line" == *"FAILED"* ]] && result="${last_line##*backup }"
-                    printf "  %-22s idle      last: %-20s %s\n" "$name" "$result" "$(relative_time "$ts")"
+                    [[ "$status" == "warning" ]] && result="warning"
+                    [[ "$status" == "failure" ]] && result="${summary##*backup }"
+                    printf "  %-22s idle      last: %-20s %s\n" "$name" "$result" "$(relative_time "$timestamp")"
+                else
+                    # Fall back to the old log-grep for a share that
+                    # hasn't run yet since upgrading to the status-file
+                    # scheme.
+                    last_line="$(grep -E "share '${name}' backup (completed successfully|completed with warnings|FAILED)" "$backup_log" 2>/dev/null | tail -1)"
+                    if [[ -z "$last_line" ]]; then
+                        printf "  %-22s idle      never run\n" "$name"
+                    else
+                        ts="$(sed -n 's/^\[\([^]]*\)\].*/\1/p' <<<"$last_line")"
+                        result="ok"
+                        [[ "$last_line" == *"completed with warnings"* ]] && result="warning"
+                        [[ "$last_line" == *"FAILED"* ]] && result="${last_line##*backup }"
+                        printf "  %-22s idle      last: %-20s %s\n" "$name" "$result" "$(relative_time "$ts")"
+                    fi
                 fi
             fi
         done

@@ -984,6 +984,17 @@ configured in `restic.env`:
    monitoring you already have (Nagios, Zabbix, a cron job that greps
    `STATUS=`, ...) - also viewable via `resticctl status`.
 
+   `restic-backup.sh` also writes one of these per share it backs up
+   (`${RESTIC_STATUS_DIR}/backup-<share>.status`, same format, `JOB`
+   set to `backup-<share>`) - this, not `backup.log`, is what
+   `resticctl status`'s per-share table reads to show "last: ok/
+   warning/FAILED `<n>` ago". It has to be a dedicated file rather than
+   grepping the share's last completion line out of `backup.log`:
+   confirmed on manny-01, a share whose last run landed just before
+   `backup.log`'s own logrotate rotation would otherwise read as
+   "never run" until it ran again, even though it had actually
+   succeeded hours earlier.
+
 2. **Email and/or webhook notifications**, opt-in:
    ```sh
    RESTIC_NOTIFY_EMAIL="ops-team@example.lu"
