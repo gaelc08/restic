@@ -61,8 +61,39 @@ set -uo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/restic-common.sh"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/netapp-common.sh"
 
 LOG_FILE="${BACKUP_LOG_FILE:-${LOG_DIR}/backup.log}"
+
+# --- NetApp snapshot-then-backup cleanup ------------------------------------
+#
+# One trap for the whole process's lifetime rather than one per share:
+# simpler, and it still protects a share's bind-mount/snapshot from
+# being left behind if this script is killed mid-backup (systemd stop,
+# OOM, ...), not just on a normal/expected failure path. The
+# _netapp_active_* variables name whatever (if anything) is currently
+# "open" for the share being processed right now; cleanup_netapp_share
+# is a no-op when none are set, so it's always safe to call, on every
+# exit path, whether or not the current share even uses this feature.
+_netapp_active_mount=""
+_netapp_active_svm=""
+_netapp_active_volume=""
+_netapp_active_snapname=""
+
+cleanup_netapp_share() {
+    if [[ -n "$_netapp_active_mount" ]]; then
+        umount "$_netapp_active_mount" 2>>"$LOG_FILE" \
+            || log_error "failed to unmount NetApp snapshot bind-mount at $_netapp_active_mount - it may still be showing frozen snapshot content"
+        _netapp_active_mount=""
+    fi
+    if [[ -n "$_netapp_active_svm" ]]; then
+        netapp_delete_snapshot "$_netapp_active_svm" "$_netapp_active_volume" "$_netapp_active_snapname" \
+            || log_error "failed to delete NetApp snapshot $_netapp_active_snapname on ${_netapp_active_svm}:${_netapp_active_volume} - delete it by hand once the cluster is reachable again"
+        _netapp_active_svm=""
+    fi
+}
+trap cleanup_netapp_share EXIT
 
 RUN_TAG="${RESTIC_BACKUP_TAG:-scheduled}"
 ONLY_PATH=""
@@ -116,6 +147,8 @@ if ! check_shares_mounted; then
 fi
 log_info "shares: ${VALID_SHARE_PATHS[*]}"
 
+netapp_load_mapping
+
 RESTIC_BACKUP_LOCK_TIMEOUT="${RESTIC_BACKUP_LOCK_TIMEOUT:-300}"
 if ! acquire_lock "$RESTIC_BACKUP_LOCK_TIMEOUT" shared; then
     log_error "===== restic backup aborted: could not acquire lock $RESTIC_LOCK_FILE within ${RESTIC_BACKUP_LOCK_TIMEOUT}s (maintenance running?) ====="
@@ -165,6 +198,43 @@ for i in "${!VALID_SHARE_PATHS[@]}"; do
 
     BACKUP_ARGS+=("$path")
 
+    # If this share is mapped in NETAPP_VOLUMES_FILE, back up a frozen
+    # NetApp Snapshot copy of it instead of its live, changing
+    # filesystem - see "Backing up from a NetApp snapshot" in
+    # README.md. Deliberately bind-mounted onto $path itself (not
+    # backed up from a separate .snapshot/... path): restic records
+    # whatever path it's given as that snapshot's own, and everything
+    # downstream (restic forget --path, resticctl list --path, the
+    # web report) depends on that path being the exact same string,
+    # share after share, run after run - a bind-mount keeps $path
+    # itself unchanged while swapping what it actually shows for the
+    # duration of this one backup.
+    if [[ -v "NETAPP_SVM[$path]" ]]; then
+        svm="${NETAPP_SVM[$path]}"
+        volume="${NETAPP_VOLUME[$path]}"
+        netapp_snap_name="restic_backup_${share_name}"
+
+        log_info "share '$share_name': snapshotting NetApp volume ${svm}:${volume} (snapshot '${netapp_snap_name}') before backup"
+        if ! netapp_create_snapshot "$svm" "$volume" "$netapp_snap_name"; then
+            log_error "share '$share_name' backup FAILED (could not create NetApp snapshot ${netapp_snap_name} on ${svm}:${volume})"
+            FAILED=1
+            FAILED_SHARES+=("$share_name")
+            continue
+        fi
+        _netapp_active_svm="$svm"
+        _netapp_active_volume="$volume"
+        _netapp_active_snapname="$netapp_snap_name"
+
+        if ! mount --bind "${path}/.snapshot/${netapp_snap_name}" "$path" 2>>"$LOG_FILE"; then
+            log_error "share '$share_name' backup FAILED (bind-mounting the NetApp snapshot onto $path failed)"
+            FAILED=1
+            FAILED_SHARES+=("$share_name")
+            cleanup_netapp_share
+            continue
+        fi
+        _netapp_active_mount="$path"
+    fi
+
     # Also tee restic's own output into a per-share progress file (one
     # per share, truncated fresh - tee's default, since it's given
     # without -a - at the start of each run) so `resticctl status` can
@@ -178,6 +248,8 @@ for i in "${!VALID_SHARE_PATHS[@]}"; do
     log_info "backing up share '$share_name' (policy=$policy): running restic ${BACKUP_ARGS[*]}"
     restic "${BACKUP_ARGS[@]}" 2>&1 | tee "$PROGRESS_FILE" >>"$LOG_FILE"
     rc=${PIPESTATUS[0]}
+
+    cleanup_netapp_share
 
     if [[ $rc -eq 0 ]]; then
         log_info "share '$share_name' backup completed successfully"
