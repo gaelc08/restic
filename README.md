@@ -34,7 +34,7 @@ resticctl delete [flags...]     # remove snapshot(s), see below
 resticctl verify --target <path> [share-path]  # prove backups are actually restorable, see below
 resticctl report                # email the daily status digest, see below
 resticctl version               # what commit is deployed
-resticctl status                # which shares are backing up now (with progress), which are idle
+resticctl status                # which shares are backing up now (with progress), which are idle, and when the next scheduled run is
 resticctl help
 ```
 
