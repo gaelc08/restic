@@ -1,0 +1,21 @@
+# Optional: maps a share's mount point to the NetApp ONTAP SVM/volume
+# that actually backs it, so restic-backup.sh can snapshot-then-backup
+# that share instead of reading the live, changing filesystem
+# directly (see "Backing up from a NetApp snapshot" in README.md for
+# the full rationale and mechanism).
+#
+# One share per line: "<mount point>  <SVM name>  <volume name>".
+# The SVM/volume names are ONTAP's own (System Manager, or `volume
+# show -vserver <svm> -volume <volume>`) - they do NOT need to match
+# the local mount point name or path.
+#
+# A share NOT listed here is backed up exactly as before (no NetApp
+# snapshot involved) - this file is entirely opt-in, one share at a
+# time. Copy to /etc/restic/netapp-volumes.conf; if that file doesn't
+# exist at all, nothing here is required and every share just backs
+# up directly as always.
+#
+# Blank lines and lines starting with # are ignored.
+
+/mnt/svm-cs3-bnl-dev/presentation_copy    svm-cs3-bnl-dev    presentation_copy_vol01
+/mnt/SVMCIGOUVZ1001/test                  SVMCIGOUVZ1001     test_vol

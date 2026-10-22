@@ -33,6 +33,7 @@ install -m 0755 "${SCRIPT_DIR}/bin/restic-webreport.sh"       /opt/restic/bin/re
 install -m 0755 "${SCRIPT_DIR}/bin/restic-add-share.sh"       /opt/restic/bin/restic-add-share.sh
 install -m 0755 "${SCRIPT_DIR}/bin/restic-migrate-host.sh"    /opt/restic/bin/restic-migrate-host.sh
 install -m 0644 "${SCRIPT_DIR}/bin/restic-common.sh"          /opt/restic/bin/restic-common.sh
+install -m 0644 "${SCRIPT_DIR}/bin/netapp-common.sh"          /opt/restic/bin/netapp-common.sh
 install -m 0755 "${SCRIPT_DIR}/bin/resticctl"                 /opt/restic/bin/resticctl
 
 echo "==> Linking resticctl onto PATH"

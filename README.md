@@ -182,6 +182,9 @@ underlying scripts directly, not through `resticctl`).
 - `python3` (stdlib only, no extra packages), only if you enable
   `restic-webserver.service` - see
   [A live, grouped-by-share web report](#a-live-grouped-by-share-web-report)
+- `curl` and `jq` (both already required above), only if any share is
+  listed in `/etc/restic/netapp-volumes.conf` - see
+  [Backing up from a NetApp snapshot](#backing-up-from-a-netapp-snapshot)
 
 ## Install
 
@@ -475,6 +478,77 @@ automatically (existing shares need their fstab line and
 `mount -o remount` updated by hand). Keep it consistent across shares
 on the same network path rather than mixing values without a measured
 reason to.
+
+### Backing up from a NetApp snapshot
+
+`restic backup` walks the live filesystem, which for a large share can
+take hours - `presentation_copy` (43+ TiB) has taken anywhere from 9 to
+57 hours. A plain file-by-file walk that long has no consistency
+guarantee: files touched partway through the walk can end up in restic's
+snapshot in a mix of before/after states, since restic reads each file
+whenever it happens to get to it, not all at one instant.
+
+For a share backed by a NetApp ONTAP volume, `restic-backup.sh` can
+back up a frozen NetApp Snapshot copy of that volume instead of its
+live, changing filesystem - every file reflects the exact same instant,
+no matter how long restic later takes to read through it. This is
+**crash consistency** (the same guarantee an LVM or ZFS snapshot gives,
+or pulling the power cord at that instant), not application
+consistency - fine for plain file shares, not sufficient on its own for
+a live database file without its own fsync/quiesce.
+
+**Setup** (per share, entirely opt-in):
+
+1. Create a dedicated NetApp user scoped to *only* creating, listing
+   and deleting Snapshot copies on the relevant volumes - never the
+   cluster admin account. Enable the ONTAP REST API's management
+   service on the same data LIF already used for this share's NFS/CIFS
+   traffic (no new network path needed).
+2. Copy `config/netapp-volumes.conf.example` to
+   `/etc/restic/netapp-volumes.conf` and add a line mapping the
+   share's local mount point to its actual SVM and volume name on the
+   NetApp side (`volume show -vserver <svm> -volume <volume>` to
+   confirm - these do not have to match the local mount point's own
+   name or path).
+3. Set `NETAPP_API_URL`/`NETAPP_API_USER`/`NETAPP_API_PASSWORD` (or
+   `NETAPP_API_PASSWORD_FILE`) and `NETAPP_API_CACERT` in
+   `secrets.env` - see `config/secrets.env.example`. TLS verification
+   is never disabled; point `NETAPP_API_CACERT` at whatever CA signed
+   ONTAP's REST API certificate.
+4. Set `NETAPP_VOLUMES_FILE` in `restic.env` if you didn't use the
+   default path.
+
+A share with no entry in `netapp-volumes.conf` - including when that
+file doesn't exist at all - backs up exactly as before, direct from
+the live filesystem. Nothing else changes for it.
+
+**What actually happens**, per backup of a mapped share (`bin/netapp-common.sh` +
+the relevant block in `bin/restic-backup.sh`):
+
+1. Create (or, if one was left over from a crashed previous run,
+   delete and recreate) a NetApp Snapshot named `restic_backup_<share
+   name>` on that volume, via the ONTAP REST API.
+2. `mount --bind <share>/.snapshot/restic_backup_<share name> <share>`
+   - deliberately bound *onto the share's own mount point*, not backed
+   up from a separate `.snapshot/...` path: restic records whatever
+   path it's given as that snapshot's own, and `restic forget --path`,
+   `resticctl list --path`, and the web report all depend on that path
+   being the exact same string, share after share, run after run. The
+   bind-mount keeps the path unchanged while swapping what it shows,
+   transparently to restic.
+3. Run `restic backup` exactly as for any other share - it has no idea
+   a NetApp snapshot was involved.
+4. Unmount, then delete the NetApp snapshot.
+
+Steps 2 and 4 are tied together by a single `trap ... EXIT` for the
+whole `restic-backup.sh` process, not just a cleanup call after the
+normal path: if this script is killed mid-backup (a systemd stop, an
+OOM, ...), the bind-mount is still unmounted and the snapshot still
+deleted on the way out, rather than left showing frozen content (or
+consuming cluster snapshot space) indefinitely. A share whose snapshot
+can't be created, or whose bind-mount fails, is marked failed (same as
+any other backup failure) and skipped for that run - never backed up
+from the live filesystem as a silent fallback.
 
 ### Moving to new hardware
 
