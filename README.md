@@ -501,22 +501,29 @@ a live database file without its own fsync/quiesce.
 
 1. Create a dedicated NetApp user scoped to *only* creating, listing
    and deleting Snapshot copies on the relevant volumes - never the
-   cluster admin account. Enable the ONTAP REST API's management
-   service on the same data LIF already used for this share's NFS/CIFS
-   traffic (no new network path needed).
-2. Copy `config/netapp-volumes.conf.example` to
+   cluster admin account. ONTAP local users are per-SVM, so this means
+   creating the identical username/password on every SVM involved.
+   Enable the ONTAP REST API's management service on the same data LIF
+   already used for that SVM's NFS/CIFS backup traffic (no new network
+   path needed) - not a separate cluster management LIF.
+2. Copy `config/netapp-svms.conf.example` to
+   `/etc/restic/netapp-svms.conf` and add a line per SVM mapping its
+   name to that same data LIF's URL (several shares/volumes commonly
+   share one SVM, hence this being a separate file from the per-share
+   mapping below rather than repeating the URL on every line there).
+3. Copy `config/netapp-volumes.conf.example` to
    `/etc/restic/netapp-volumes.conf` and add a line mapping the
    share's local mount point to its actual SVM and volume name on the
    NetApp side (`volume show -vserver <svm> -volume <volume>` to
    confirm - these do not have to match the local mount point's own
    name or path).
-3. Set `NETAPP_API_URL`/`NETAPP_API_USER`/`NETAPP_API_PASSWORD` (or
+4. Set `NETAPP_API_USER`/`NETAPP_API_PASSWORD` (or
    `NETAPP_API_PASSWORD_FILE`) and `NETAPP_API_CACERT` in
    `secrets.env` - see `config/secrets.env.example`. TLS verification
    is never disabled; point `NETAPP_API_CACERT` at whatever CA signed
    ONTAP's REST API certificate.
-4. Set `NETAPP_VOLUMES_FILE` in `restic.env` if you didn't use the
-   default path.
+5. Set `NETAPP_VOLUMES_FILE`/`NETAPP_SVMS_FILE` in `restic.env` if you
+   didn't use the default paths.
 
 A share with no entry in `netapp-volumes.conf` - including when that
 file doesn't exist at all - backs up exactly as before, direct from

@@ -5,9 +5,13 @@
 # NETAPP_VOLUMES_FILE - every other script, and any share not listed
 # there, never touches this file or needs any of its config.
 #
-# Needs (see config/secrets.env.example): NETAPP_API_URL,
-# NETAPP_API_USER, NETAPP_API_PASSWORD (or NETAPP_API_PASSWORD_FILE),
-# NETAPP_API_CACERT. Uses curl + jq (already a dependency).
+# Needs (see config/secrets.env.example and
+# config/netapp-svms.conf.example): NETAPP_API_USER, NETAPP_API_PASSWORD
+# (or NETAPP_API_PASSWORD_FILE), NETAPP_API_CACERT, NETAPP_SVMS_FILE.
+# The user/password are the same against every SVM (ONTAP local users
+# are per-SVM, so this means an identical username/password created on
+# each one) - only the API endpoint differs per SVM, which
+# NETAPP_SVMS_FILE maps. Uses curl + jq (already a dependency).
 #
 # Not meant to be executed directly - like restic-common.sh, this is
 # a function library only.
@@ -49,6 +53,34 @@ netapp_load_mapping() {
     done < "$file"
 }
 
+# --- NETAPP_SVMS_FILE parsing -----------------------------------------------
+#
+# Populates NETAPP_SVM_URL, keyed by SVM name, from NETAPP_SVMS_FILE -
+# the ONTAP REST API base URL (that SVM's own data LIF) to reach each
+# SVM on. Several shares/volumes commonly share one SVM, which is why
+# this is a separate file/array from NETAPP_SVM/NETAPP_VOLUME above
+# rather than repeating the URL on every netapp-volumes.conf line.
+netapp_load_svm_urls() {
+    declare -gA NETAPP_SVM_URL=()
+
+    local file="${NETAPP_SVMS_FILE:-}"
+    [[ -n "$file" && -r "$file" ]] || return 0
+
+    local line svm url
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%%$'\r'}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -z "$line" || "$line" =~ ^# ]] && continue
+
+        read -r svm url <<< "$line"
+        if [[ -z "$svm" || -z "$url" ]]; then
+            die "malformed line in $file (expected: <svm> <https://url>): $line"
+        fi
+        NETAPP_SVM_URL["$svm"]="${url%/}"
+    done < "$file"
+}
+
 # --- Credentials -----------------------------------------------------------
 
 _netapp_password() {
@@ -62,21 +94,31 @@ _netapp_password() {
 }
 
 _netapp_require_config() {
-    : "${NETAPP_API_URL:?NETAPP_API_URL must be set to use NetApp snapshots}"
     : "${NETAPP_API_USER:?NETAPP_API_USER must be set to use NetApp snapshots}"
     : "${NETAPP_API_CACERT:?NETAPP_API_CACERT must be set to use NetApp snapshots - this project never disables TLS verification}"
     [[ -r "$NETAPP_API_CACERT" ]] || die "NETAPP_API_CACERT not readable: $NETAPP_API_CACERT"
 }
 
+# _netapp_url_for_svm <svm> -> that SVM's API base URL on stdout, or
+# dies if NETAPP_SVMS_FILE has no entry for it - a share referencing an
+# unmapped SVM is a config error, not something to silently skip.
+_netapp_url_for_svm() {
+    local svm="$1"
+    [[ -v "NETAPP_SVM_URL[$svm]" ]] || die "no entry for SVM '${svm}' in ${NETAPP_SVMS_FILE:-NETAPP_SVMS_FILE} - add one (see config/netapp-svms.conf.example)"
+    printf '%s' "${NETAPP_SVM_URL[$svm]}"
+}
+
 # --- Low-level REST call ----------------------------------------------------
 #
-# netapp_api <method> <path> [json-body] -> response body on stdout.
-# <path> is relative to NETAPP_API_URL (e.g. "/api/storage/volumes").
-# Returns non-zero (and logs the response) on anything other than a
-# 2xx status.
+# netapp_api <svm> <method> <path> [json-body] -> response body on
+# stdout. <path> is relative to that SVM's own API URL (e.g.
+# "/api/storage/volumes"). Returns non-zero (and logs the response) on
+# anything other than a 2xx status.
 netapp_api() {
-    local method="$1" path="$2" body="${3:-}"
+    local svm="$1" method="$2" path="$3" body="${4:-}"
     _netapp_require_config
+    local base_url
+    base_url="$(_netapp_url_for_svm "$svm")" || return 1
     local password
     password="$(_netapp_password)"
 
@@ -92,36 +134,36 @@ netapp_api() {
     fi
 
     local raw http_code response
-    raw="$(curl "${curl_args[@]}" "${NETAPP_API_URL}${path}" 2>>"$LOG_FILE")"
+    raw="$(curl "${curl_args[@]}" "${base_url}${path}" 2>>"$LOG_FILE")"
     http_code="${raw##*$'\n'}"
     response="${raw%$'\n'*}"
 
     if [[ ! "$http_code" =~ ^[0-9]+$ ]] || ((http_code < 200 || http_code >= 300)); then
-        log_error "NetApp API ${method} ${path} -> HTTP ${http_code}: ${response}"
+        log_error "NetApp API (svm=${svm}) ${method} ${path} -> HTTP ${http_code}: ${response}"
         return 1
     fi
     printf '%s' "$response"
 }
 
-# netapp_wait_job <job-uuid> - polls a ONTAP REST async job until it
-# reports success or failure (snapshot create/delete are near-instant
-# on the storage side, but ONTAP REST still wraps them as jobs) -
-# timeout after 60s, generous for an operation that normally
+# netapp_wait_job <svm> <job-uuid> - polls a ONTAP REST async job until
+# it reports success or failure (snapshot create/delete are
+# near-instant on the storage side, but ONTAP REST still wraps them as
+# jobs) - timeout after 60s, generous for an operation that normally
 # completes in well under a second.
 netapp_wait_job() {
-    local job_uuid="$1" tries=60 state
+    local svm="$1" job_uuid="$2" tries=60 state
     while (( tries-- > 0 )); do
-        state="$(netapp_api GET "/api/cluster/jobs/${job_uuid}" | jq -r '.state // empty')" || return 1
+        state="$(netapp_api "$svm" GET "/api/cluster/jobs/${job_uuid}" | jq -r '.state // empty')" || return 1
         case "$state" in
             success) return 0 ;;
             failure|error)
-                log_error "NetApp job ${job_uuid} failed"
+                log_error "NetApp job ${job_uuid} (svm=${svm}) failed"
                 return 1
                 ;;
         esac
         sleep 1
     done
-    log_error "NetApp job ${job_uuid} did not finish within 60s"
+    log_error "NetApp job ${job_uuid} (svm=${svm}) did not finish within 60s"
     return 1
 }
 
@@ -129,7 +171,7 @@ netapp_wait_job() {
 # if not found/ambiguous.
 netapp_get_volume_uuid() {
     local svm="$1" volume="$2" response count uuid
-    response="$(netapp_api GET "/api/storage/volumes?name=${volume}&svm.name=${svm}&fields=uuid")" || return 1
+    response="$(netapp_api "$svm" GET "/api/storage/volumes?name=${volume}&svm.name=${svm}&fields=uuid")" || return 1
     count="$(jq -r '.num_records' <<<"$response")"
     if [[ "$count" != "1" ]]; then
         log_error "NetApp volume lookup for svm=${svm} volume=${volume} returned ${count} result(s), expected exactly 1"
@@ -151,10 +193,10 @@ netapp_create_snapshot() {
 
     netapp_delete_snapshot "$svm" "$volume" "$name" || true
 
-    response="$(netapp_api POST "/api/storage/volumes/${uuid}/snapshots" "{\"name\":\"${name}\"}")" || return 1
+    response="$(netapp_api "$svm" POST "/api/storage/volumes/${uuid}/snapshots" "{\"name\":\"${name}\"}")" || return 1
     job_uuid="$(jq -r '.job.uuid // empty' <<<"$response")"
     if [[ -n "$job_uuid" ]]; then
-        netapp_wait_job "$job_uuid" || return 1
+        netapp_wait_job "$svm" "$job_uuid" || return 1
     fi
     log_info "created NetApp snapshot ${name} on ${svm}:${volume}"
 }
@@ -168,15 +210,15 @@ netapp_delete_snapshot() {
 
     uuid="$(netapp_get_volume_uuid "$svm" "$volume")" || return 1
 
-    response="$(netapp_api GET "/api/storage/volumes/${uuid}/snapshots?name=${name}&fields=uuid")" || return 1
+    response="$(netapp_api "$svm" GET "/api/storage/volumes/${uuid}/snapshots?name=${name}&fields=uuid")" || return 1
     count="$(jq -r '.num_records' <<<"$response")"
     [[ "$count" == "0" ]] && return 0
 
     snap_uuid="$(jq -r '.records[0].uuid' <<<"$response")"
-    response="$(netapp_api DELETE "/api/storage/volumes/${uuid}/snapshots/${snap_uuid}")" || return 1
+    response="$(netapp_api "$svm" DELETE "/api/storage/volumes/${uuid}/snapshots/${snap_uuid}")" || return 1
     job_uuid="$(jq -r '.job.uuid // empty' <<<"$response")"
     if [[ -n "$job_uuid" ]]; then
-        netapp_wait_job "$job_uuid" || return 1
+        netapp_wait_job "$svm" "$job_uuid" || return 1
     fi
     log_info "deleted NetApp snapshot ${name} on ${svm}:${volume}"
 }
