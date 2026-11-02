@@ -76,13 +76,27 @@ underlying scripts directly, not through `resticctl`).
   `systemctl start --no-block restic-backup.service` to go through the
   timer's own unit) instead of waiting for 01:00.
 - **restic-maintenance.timer** fires **restic-maintenance.service**
-  daily at 23:00 (the last job of the day, 2 hours ahead of the 01:00
+  daily at 21:00 (the last job of the day, 4 hours ahead of the 01:00
   backup dispatch for extra margin), which runs
   `/opt/restic/bin/restic-maintenance.sh`: applies **each share's own
   retention policy** (`restic forget --tag scheduled --path <share>
   --keep-...`, once per share), then a single repository-wide `restic
   prune --max-repack-size 0`, then an optional metadata-only `restic
   check`.
+  `restic check` grows with the repository's **total** size, not just
+  what changed that day - confirmed on manny-01, where it grew from
+  minutes to 4h30+ once the repository crossed a few hundred TB, started
+  missing the backup window most nights, and its local metadata cache
+  (`RESTIC_CACHE_DIR`) reached 53G and exhausted the filesystem it lives
+  on, which made check report a wall of "repository contains errors"
+  that looked like real corruption but was actually the cache
+  exhaustion tripping restic's circuit breaker. `RESTIC_CHECK_DAY`
+  throttles check to one day a week once a repository is large enough
+  for this to matter (forget/prune still run daily - cheap, and
+  retention needs to actually apply daily); `RESTIC_CHECK_MIN_FREE_GB`
+  refuses to start check at all below a configured amount of free
+  space, and `restic cache --cleanup` runs right before it, reclaiming
+  whatever stale cache it can first - see `config/restic.env.example`.
 - **Backups run in parallel with each other, never with maintenance.**
   All of them take the same lock file (`RESTIC_LOCK_FILE`,
   `/run/restic/restic.lock` by default), but in different modes: every
@@ -324,6 +338,8 @@ every time it's re-run, if you'd rather just do that.
 | `REQUIRE_MOUNTED` | abort backup if a configured share isn't mounted |
 | `RESTIC_MAINTENANCE_EXTRA_ARGS` | extra flags for the maintenance `prune` (default `--max-repack-size 0`, required for Glacier/tape) |
 | `RESTIC_RUN_CHECK` | run metadata-only `restic check` after prune |
+| `RESTIC_CHECK_DAY` | throttle `restic check` to one day a week (`"Sun"`, …; unset = every day) - see below |
+| `RESTIC_CHECK_MIN_FREE_GB` | refuse to start `restic check` below this much free space on `RESTIC_CACHE_DIR`'s filesystem (default 20) |
 | `RESTIC_LOCK_FILE` | lock file backups hold in shared mode (parallel with each other) and maintenance holds in exclusive mode (never alongside a backup) |
 | `RESTIC_BACKUP_LOCK_TIMEOUT` | seconds backup waits for the lock before failing |
 | `RESTIC_BACKUP_MAX_PARALLEL` | how many shares actually run `restic backup` at once (default 4, sized for a 64G host) - see below |

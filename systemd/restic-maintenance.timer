@@ -2,17 +2,21 @@
 Description=Run restic maintenance (forget/prune/check) daily
 
 [Timer]
-# Daily at 23:00 local time - 2 hours before restic-backup.timer's
-# 01:00 start (moved from 00:00 for extra margin in case maintenance
-# itself runs long one day), giving every share's backup as much of
-# the day as possible to finish first. This is a convenience, not a
-# hard guarantee: restic-maintenance.service takes the same lock
-# (/run/restic/restic.lock) as every restic-backup@<share>.service
-# instance (in exclusive mode, see acquire_lock() in
-# bin/restic-common.sh) and exits immediately without doing anything
-# if any of them is still running when it fires - see
-# bin/restic-maintenance.sh.
-OnCalendar=*-*-* 23:00:00
+# Daily at 21:00 local time - 4 hours before restic-backup.timer's
+# 01:00 start, giving every share's backup as much of the day as
+# possible to finish first, and extra margin for restic-maintenance.sh
+# itself to run long (moved from 23:00/2h margin after `restic check`
+# grew to 4h30+ on a multi-hundred-TB repository and started eating
+# into the backup window most nights - see RESTIC_CHECK_DAY in
+# config/restic.env.example, which now throttles check itself to one
+# night a week; this wider margin is for the other six). This is a
+# convenience, not a hard guarantee: restic-maintenance.service takes
+# the same lock (/run/restic/restic.lock) as every
+# restic-backup@<share>.service instance (in exclusive mode, see
+# acquire_lock() in bin/restic-common.sh) and exits immediately
+# without doing anything if any of them is still running when it fires
+# - see bin/restic-maintenance.sh.
+OnCalendar=*-*-* 21:00:00
 RandomizedDelaySec=300
 Persistent=true
 
