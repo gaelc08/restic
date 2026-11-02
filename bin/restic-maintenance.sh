@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Daily maintenance: apply each share's own retention policy (forget),
 # reclaim space once for the whole repository (prune), then an
-# optional metadata-only check.
+# optional metadata-only check - forget/prune run every day, but check
+# itself can be throttled to a specific day of the week
+# (RESTIC_CHECK_DAY) since, unlike forget/prune, it grows with the
+# repository's total size and can end up taking hours.
 #
 # Intended to run daily via restic-maintenance.service / .timer, after
 # every restic-backup@<share>.service instance has had a chance to
@@ -135,21 +138,59 @@ else
 fi
 
 CHECK_RC=0
-if [[ "${RESTIC_RUN_CHECK:-true}" == "true" ]]; then
-    # Metadata-only check: verifies the repository structure and index
-    # consistency without downloading pack data, so it does not touch
-    # Glacier/tape-resident objects.
-    CHECK_ARGS=(check "${RESTIC_GLOBAL_ARGS[@]}")
-    log_info "running: restic ${CHECK_ARGS[*]}"
-    restic "${CHECK_ARGS[@]}" >>"$LOG_FILE" 2>&1
-    CHECK_RC=$?
-    if [[ $CHECK_RC -eq 0 ]]; then
-        log_info "restic check completed successfully"
-    else
-        log_error "restic check FAILED (exit $CHECK_RC)"
-    fi
-else
+# RESTIC_CHECK_DAY ("Sun", "Mon", ... matching `date +%a`, or unset/empty
+# for every day) throttles how often the check actually runs, separately
+# from RESTIC_RUN_CHECK's on/off switch. check verifies every tree/blob
+# in every snapshot, which (unlike forget/prune) grows with the
+# repository's total size, not just what changed - confirmed on
+# manny-01, where it grew from minutes to 4h30+ as the repository
+# crossed a few hundred TB, blowing well past the margin before the
+# 01:00 backup window and causing every backup that night to time out
+# waiting for this exclusive lock. forget/prune still run every day
+# (cheap, and retention needs to actually apply daily); only the much
+# more expensive check is throttled.
+TODAY="$(date +%a)"
+if [[ "${RESTIC_RUN_CHECK:-true}" != "true" ]]; then
     log_info "RESTIC_RUN_CHECK is not true; skipping restic check"
+elif [[ -n "${RESTIC_CHECK_DAY:-}" && "$RESTIC_CHECK_DAY" != "$TODAY" ]]; then
+    log_info "RESTIC_CHECK_DAY=${RESTIC_CHECK_DAY}, today is ${TODAY}; skipping restic check until then"
+else
+    # The local metadata cache (RESTIC_CACHE_DIR) grows with the
+    # repository and is never pruned automatically between runs -
+    # confirmed on manny-01, where it reached 53G and, combined with
+    # check's temporary download buffers, exhausted the filesystem
+    # mid-check. That doesn't fail cleanly: restic's circuit breaker
+    # trips on the resulting write errors and check reports hundreds of
+    # "repository contains errors" lines that look like real data
+    # corruption but aren't. Clearing stale cache entries first, and
+    # refusing to even start if free space already looks tight, turns
+    # that into one clear log line instead.
+    log_info "running: restic cache --cleanup"
+    restic cache --cleanup >>"$LOG_FILE" 2>&1 \
+        || log_warn "restic cache --cleanup failed (non-fatal, continuing)"
+
+    MIN_FREE_KB=$(( ${RESTIC_CHECK_MIN_FREE_GB:-20} * 1024 * 1024 ))
+    FREE_KB="$(df -Pk "$RESTIC_CACHE_DIR" | awk 'NR==2 {print $4}')"
+    if [[ "$FREE_KB" =~ ^[0-9]+$ ]] && (( FREE_KB < MIN_FREE_KB )); then
+        log_error "only $((FREE_KB / 1024 / 1024))G free on the filesystem holding RESTIC_CACHE_DIR ($RESTIC_CACHE_DIR), below RESTIC_CHECK_MIN_FREE_GB=${RESTIC_CHECK_MIN_FREE_GB:-20}G - skipping restic check rather than risk a cache-exhaustion failure that reports as repository corruption. Free up space (or grow that filesystem) before the next scheduled check."
+        CHECK_RC=1
+    else
+        # Metadata-only check: verifies the repository structure and
+        # index consistency. Still reads some pack data (the tree blobs
+        # embedded in data packs, needed to validate snapshot trees),
+        # via RESTIC_CACHE_DIR - not a full --read-data pass, so it
+        # does not touch every Glacier/tape-resident object, but it is
+        # not literally zero local I/O either.
+        CHECK_ARGS=(check "${RESTIC_GLOBAL_ARGS[@]}")
+        log_info "running: restic ${CHECK_ARGS[*]}"
+        restic "${CHECK_ARGS[@]}" >>"$LOG_FILE" 2>&1
+        CHECK_RC=$?
+        if [[ $CHECK_RC -eq 0 ]]; then
+            log_info "restic check completed successfully"
+        else
+            log_error "restic check FAILED (exit $CHECK_RC)"
+        fi
+    fi
 fi
 
 END_TS=$(date +%s)

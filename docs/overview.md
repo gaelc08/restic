@@ -64,11 +64,21 @@ direct, sans aucun changement de comportement.
 
 ## Maintenance, rétention et vérification
 
-`restic-maintenance.timer` lance chaque jour à 23h00 (deux heures
+`restic-maintenance.timer` lance chaque jour à 21h00 (quatre heures
 avant le backup du lendemain, pour garder de la marge) l'application
 de la politique de rétention (`forget --prune`, qui élimine les
 anciens snapshots selon la politique `short`/`long` de chaque share)
 et un contrôle d'intégrité du repository (`check`).
+
+`check` grossit avec la taille totale du repository, pas seulement ce
+qui a changé dans la journée - sur un gros repository (plusieurs
+centaines de To), il peut prendre plusieurs heures et manger
+l'espace disque local de son cache. Il est donc limité à un seul jour
+par semaine (`RESTIC_CHECK_DAY`), les six autres nuits se contentant
+du `forget`/`prune` (rapide). Un garde-fou refuse de lancer `check` si
+l'espace disque local devient trop juste, plutôt que de risquer un
+échec qui ressemble à une corruption du repository alors que ce n'en
+est pas une.
 
 Vérifier qu'un backup existe ne prouve pas qu'il est restaurable.
 `resticctl verify` restaure réellement un échantillon de données
