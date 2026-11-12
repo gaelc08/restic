@@ -13,6 +13,13 @@ ConditionPathExists=/etc/restic/restic.env
 Type=oneshot
 EnvironmentFile=/etc/restic/restic.env
 ExecStart=/opt/restic/bin/restic-backup.sh %i
+# restic-backup.sh exits 3 when the backup completed but some source
+# files could not be read fully (restic's own "incomplete snapshot"
+# code, e.g. a transient EAGAIN on an NFS xattr call). The snapshot is
+# valid and a warning notification is already sent, so don't let
+# systemd mark the unit "failed" (which trips `systemctl --failed`
+# monitoring). Real failures (exit 1, OOM kill, ...) still fail it.
+SuccessExitStatus=3
 
 # All restic-backup@<share> instances share this slice (see
 # systemd/restic-backup.slice), which caps their *combined* memory -
