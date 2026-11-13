@@ -48,7 +48,7 @@ underlying scripts directly, not through `resticctl`).
 ## How it fits together
 
 - **`restic-backup.timer` fires `restic-backup.service` once daily at
-  01:00** (+ up to 10 min random delay) - but that service is just a
+  20:00** (+ up to 10 min random delay) - but that service is just a
   thin *dispatcher* (`bin/restic-backup-dispatch.sh`): it reads
   `shares.conf` fresh every time it runs and, for each share, starts
   `restic-backup@<share>.service` - **a template unit, one instance
@@ -74,10 +74,10 @@ underlying scripts directly, not through `resticctl`).
   the next run - no per-share timer to separately enable.
   Trigger it on demand with `resticctl backup-all` (or
   `systemctl start --no-block restic-backup.service` to go through the
-  timer's own unit) instead of waiting for 01:00.
+  timer's own unit) instead of waiting for 20:00.
 - **restic-maintenance.timer** fires **restic-maintenance.service**
-  daily at 21:00 (the last job of the day, 4 hours ahead of the 01:00
-  backup dispatch for extra margin), which runs
+  daily at 18:00 (2 hours ahead of the 20:00
+  backup dispatch for margin), which runs
   `/opt/restic/bin/restic-maintenance.sh`: applies **each share's own
   retention policy** (`restic forget --tag scheduled --path <share>
   --keep-...`, once per share), then a single repository-wide `restic
@@ -1105,7 +1105,7 @@ size correctly, and reformats that as HTML.
 Unlike `restic-verify.sh`, this never touches archived pack data or
 takes the backup/maintenance lock - only local status files and fast
 metadata - so `restic-report.timer` (daily at 06:00, comfortably after
-the 23:00/01:00 maintenance/backup runs) is safe to enable:
+the 18:00/20:00 maintenance/backup runs) is safe to enable:
 
 ```sh
 systemctl enable --now restic-report.timer

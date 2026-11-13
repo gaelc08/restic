@@ -145,7 +145,7 @@ CHECK_RC=0
 # repository's total size, not just what changed - confirmed on
 # manny-01, where it grew from minutes to 4h30+ as the repository
 # crossed a few hundred TB, blowing well past the margin before the
-# 01:00 backup window and causing every backup that night to time out
+# 20:00 backup window and causing every backup that night to time out
 # waiting for this exclusive lock. forget/prune still run every day
 # (cheap, and retention needs to actually apply daily); only the much
 # more expensive check is throttled.

@@ -17,7 +17,7 @@ sur des volumes de plusieurs dizaines de téraoctets.
 
 ```mermaid
 flowchart TD
-    T["restic-backup.timer<br/>01h00 quotidien (+ jusqu'à 10 min)"] --> D["restic-backup.service<br/>(dispatcher)"]
+    T["restic-backup.timer<br/>20h00 quotidien (+ jusqu'à 10 min)"] --> D["restic-backup.service<br/>(dispatcher)"]
     D --> A["partage A"]
     D --> B["partage B"]
     D --> C["partage C"]
@@ -64,8 +64,8 @@ direct, sans aucun changement de comportement.
 
 ## Maintenance, rétention et vérification
 
-`restic-maintenance.timer` lance chaque jour à 21h00 (quatre heures
-avant le backup du lendemain, pour garder de la marge) l'application
+`restic-maintenance.timer` lance chaque jour à 18h00 (deux heures
+avant le backup de 20h00, pour garder de la marge) l'application
 de la politique de rétention (`forget --prune`, qui élimine les
 anciens snapshots selon la politique `short`/`long` de chaque share)
 et un contrôle d'intégrité du repository (`check`).
