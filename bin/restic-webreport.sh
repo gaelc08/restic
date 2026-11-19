@@ -17,7 +17,9 @@
 # `restic snapshots --path <share>` grouping `resticctl list` already
 # does correctly, just rendered as HTML instead of a terminal table.
 #
-# Only reads fast repository metadata (`restic snapshots`), never
+# Only reads fast repository metadata (`restic snapshots --no-lock`:
+# no repo lock, so the hourly run can never make a concurrent
+# restic forget in restic-maintenance.sh fail with exit 11), never
 # archived pack data - safe to run frequently.
 
 set -uo pipefail
@@ -69,7 +71,7 @@ format_duration_hm() {
 # column is always there.
 share_snapshots_table() {
     local path="$1"
-    restic snapshots "${RESTIC_GLOBAL_ARGS[@]}" --path "$path" 2>>"$LOG_FILE" \
+    restic snapshots --no-lock "${RESTIC_GLOBAL_ARGS[@]}" --path "$path" 2>>"$LOG_FILE" \
         | grep -E '^(ID[[:space:]]|[0-9a-f]{8}[[:space:]])'
 }
 
@@ -100,7 +102,7 @@ share_snapshot_durations() {
         start_epoch="$(date -d "$start" +%s 2>/dev/null)" || continue
         end_epoch="$(date -d "$end" +%s 2>/dev/null)" || continue
         printf '%s\t%d\n' "$short_id" "$(( end_epoch - start_epoch ))"
-    done < <(restic snapshots "${RESTIC_GLOBAL_ARGS[@]}" --path "$path" --json 2>>"$LOG_FILE" \
+    done < <(restic snapshots --no-lock "${RESTIC_GLOBAL_ARGS[@]}" --path "$path" --json 2>>"$LOG_FILE" \
         | jq -r '.[]? | [.short_id, (.summary.backup_start // ""), (.summary.backup_end // "")] | @tsv' 2>>"$LOG_FILE")
 }
 

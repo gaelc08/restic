@@ -65,7 +65,7 @@ build_shares_table() {
 
     local ids=() path id
     for path in "${SHARE_PATHS[@]}"; do
-        id="$(restic snapshots "${RESTIC_GLOBAL_ARGS[@]}" --path "$path" --json --latest 1 2>>"$LOG_FILE" \
+        id="$(restic snapshots --no-lock "${RESTIC_GLOBAL_ARGS[@]}" --path "$path" --json --latest 1 2>>"$LOG_FILE" \
             | jq -r '.[0].short_id // empty')"
         [[ -n "$id" ]] && ids+=("$id")
     done
@@ -75,7 +75,7 @@ build_shares_table() {
         return
     fi
 
-    restic snapshots "${RESTIC_GLOBAL_ARGS[@]}" "${ids[@]}" 2>>"$LOG_FILE" \
+    restic snapshots --no-lock "${RESTIC_GLOBAL_ARGS[@]}" "${ids[@]}" 2>>"$LOG_FILE" \
         | grep -E '^(ID[[:space:]]|[0-9a-f]{8}[[:space:]])'
 }
 
