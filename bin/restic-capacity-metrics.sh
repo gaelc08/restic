@@ -125,16 +125,19 @@ prune_sizes() {
         }'
 }
 
-# maintenance_logs [all] - the maintenance logs, oldest first: only the
-# last two (today's and yesterday's, rotated daily) unless "all".
+# maintenance_logs [all] - the maintenance logs, oldest first: the
+# rotated ones (maintenance.log.1, .2.gz... or, with logrotate's
+# dateext - RHEL's default - maintenance.log-20261123[.gz]), ordered by
+# when they were last written, then the current one. Only the last week
+# unless "all": enough to find the latest prune even after a few skipped
+# maintenance runs.
 maintenance_logs() {
     local rotated=()
-    # maintenance.log.N[.gz]: the highest N is the oldest.
-    mapfile -t rotated < <(compgen -G "${MAINTENANCE_LOG}.[0-9]*" \
-        | awk -v n="${#MAINTENANCE_LOG}" '{ k = substr($0, n + 2); sub(/[^0-9].*/, "", k); print k "\t" $0 }' \
-        | sort -k1,1nr | cut -f2-)
-    if [[ "${1:-}" != all ]]; then
-        rotated=("${rotated[@]: -1}")
+    mapfile -t rotated < <(find "$(dirname "$MAINTENANCE_LOG")" -maxdepth 1 -type f \
+        \( -name "$(basename "$MAINTENANCE_LOG").[0-9]*" -o -name "$(basename "$MAINTENANCE_LOG")-*" \) \
+        -printf '%T@\t%p\n' 2>/dev/null | sort -n | cut -f2-)
+    if [[ "${1:-}" != all ]] && (( ${#rotated[@]} > 7 )); then
+        rotated=("${rotated[@]: -7}")      # (a negative offset past the start gives nothing: hence the test)
     fi
     printf '%s\n' "${rotated[@]}" "$MAINTENANCE_LOG" | grep -v '^$'
 }

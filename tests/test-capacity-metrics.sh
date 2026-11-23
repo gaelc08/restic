@@ -129,6 +129,22 @@ ARGS=()
 run RESTIC_METRICS_TEXTFILE="$WORK/restic.prom" 2>/dev/null; rc=$?
 check "textfile written" grep -q "^restic_share_size_bytes{" "$WORK/restic.prom"
 
+# --- logrotate's dateext (RHEL's default): maintenance.log-YYYYMMDD[.gz] ------
+mv "$WORK/log/maintenance.log.2.gz" "$WORK/log/maintenance.log-20261120.gz"
+mv "$WORK/log/maintenance.log.1" "$WORK/log/maintenance.log-20261121"
+touch -d '2026-11-20 03:00' "$WORK/log/maintenance.log-20261120.gz"
+touch -d '2026-11-21 03:00' "$WORK/log/maintenance.log-20261121"
+prune_run "2026-11-21 18:00:05+0100" "102.500 TiB" "0 B" >> "$WORK/log/maintenance.log-20261121"
+printf '[2026-11-22 10:00:00+0100] [INFO] no prune yet today\n' > "$WORK/log/maintenance.log"
+ARGS=(--print)
+out="$(run 2>/dev/null)"
+check "dateext: the latest prune found in a rotated log" \
+    has "$out" "restic_repository_stored_bytes{$R} $(( 1025 * 1024 ** 4 / 10 ))"
+ARGS=(--history)
+run RESTIC_METRICS_PUSH_URL="http://127.0.0.1:8428" 2>/dev/null
+check "dateext: every prune, oldest compressed log included" \
+    test "$(grep -c '^restic_repository_stored_bytes{' "$WORK/pushed")" -eq 3
+
 echo
 if (( FAILURES )); then
     echo "$FAILURES test(s) failed"
