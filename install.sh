@@ -30,6 +30,7 @@ install -m 0755 "${SCRIPT_DIR}/bin/restic-forget.sh"          /opt/restic/bin/re
 install -m 0755 "${SCRIPT_DIR}/bin/restic-verify.sh"          /opt/restic/bin/restic-verify.sh
 install -m 0755 "${SCRIPT_DIR}/bin/restic-report.sh"          /opt/restic/bin/restic-report.sh
 install -m 0755 "${SCRIPT_DIR}/bin/restic-webreport.sh"       /opt/restic/bin/restic-webreport.sh
+install -m 0755 "${SCRIPT_DIR}/bin/restic-capacity-metrics.sh" /opt/restic/bin/restic-capacity-metrics.sh
 install -m 0755 "${SCRIPT_DIR}/bin/restic-add-share.sh"       /opt/restic/bin/restic-add-share.sh
 install -m 0755 "${SCRIPT_DIR}/bin/restic-migrate-host.sh"    /opt/restic/bin/restic-migrate-host.sh
 install -m 0644 "${SCRIPT_DIR}/bin/restic-common.sh"          /opt/restic/bin/restic-common.sh
@@ -156,6 +157,10 @@ install -m 0644 "${SCRIPT_DIR}/systemd/restic-report.timer"        /etc/systemd/
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-webreport.service"   /etc/systemd/system/restic-webreport.service
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-webreport.timer"     /etc/systemd/system/restic-webreport.timer
 install -m 0644 "${SCRIPT_DIR}/systemd/restic-webserver.service"   /etc/systemd/system/restic-webserver.service
+# restic-capacity-metrics.service/.timer export the repository and
+# share sizes hourly for the capacity planning tool (metadata only).
+install -m 0644 "${SCRIPT_DIR}/systemd/restic-capacity-metrics.service" /etc/systemd/system/restic-capacity-metrics.service
+install -m 0644 "${SCRIPT_DIR}/systemd/restic-capacity-metrics.timer"   /etc/systemd/system/restic-capacity-metrics.timer
 
 # restic-backup@.timer (one enabled instance per share, e.g.
 # restic-backup@finance.timer) is from the per-share-timer design this
@@ -226,6 +231,12 @@ restic-webserver.service and your firewall if 9900 is taken). Nothing
 sensitive is exposed - the page only ever reads restic snapshot
 metadata, and restic-webserver.service has no access to /etc/restic,
 restic.env, or secrets.env at all.
+
+For capacity planning, set RESTIC_CAPACITY_BYTES in restic.env, check
+with `resticctl capacity-metrics --print`, then (once the local
+VictoriaMetrics of the capacity planning tool runs on this host):
+    systemctl enable --now restic-capacity-metrics.timer
+    resticctl capacity-metrics --history   # once: the past
 
 Restore verification (resticctl verify) has NO timer and is never
 scheduled - a real Glacier/tape restore can take minutes to many

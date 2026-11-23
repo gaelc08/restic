@@ -17,6 +17,7 @@
 #   resticctl verify --target <path> [share-path]
 #   resticctl report
 #   resticctl webreport
+#   resticctl capacity-metrics [--print | --history]
 #   resticctl version
 #   resticctl status
 #   resticctl help
@@ -281,6 +282,15 @@ Commands:
                                   to run anytime, and already run
                                   hourly by restic-webreport.timer.
 
+  capacity-metrics [--print | --history]
+                                  Export the repository and share sizes
+                                  as Prometheus metrics for capacity
+                                  planning (RESTIC_METRICS_PUSH_URL);
+                                  --print shows them, --history pushes
+                                  the past once. Metadata only - already
+                                  run hourly by
+                                  restic-capacity-metrics.timer.
+
   version                        Show the deployed commit (VERSION file).
 
   status                         Show, per share: running now (with
@@ -355,6 +365,9 @@ case "$cmd" in
         ;;
     webreport)
         exec "${SCRIPT_DIR}/restic-webreport.sh" "$@"
+        ;;
+    capacity-metrics)
+        exec "${SCRIPT_DIR}/restic-capacity-metrics.sh" "$@"
         ;;
     version)
         if [[ -r "${SCRIPT_DIR}/VERSION" ]]; then

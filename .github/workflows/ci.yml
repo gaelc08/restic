@@ -12,5 +12,7 @@ jobs:
       - run: shellcheck --version
       # Scripts only: config/*.example are sourced variable files or plain
       # data files, not scripts. Options come from .shellcheckrc.
-      - run: shellcheck install.sh bin/*.sh bin/resticctl
+      - run: shellcheck install.sh bin/*.sh bin/resticctl tests/*.sh
       - run: bash -n install.sh bin/*.sh bin/resticctl
+      # End-to-end test of restic-capacity-metrics.sh with a fake restic (needs jq, preinstalled).
+      - run: tests/test-capacity-metrics.sh
