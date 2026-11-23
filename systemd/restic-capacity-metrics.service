@@ -1,0 +1,35 @@
+[Unit]
+Description=Export the restic repository capacity as Prometheus metrics (capacity planning)
+Documentation=https://restic.readthedocs.io/
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/restic/restic.env
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/restic/restic.env
+ExecStart=/opt/restic/bin/restic-capacity-metrics.sh
+
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=restic-capacity-metrics
+
+# Only reads fast repository metadata (restic snapshots --no-lock) and
+# the maintenance log - never archived pack data, never the lock - so
+# it is safe to run hourly, during backups and maintenance too.
+#
+# IMPORTANT: every path in ReadWritePaths must already exist on disk
+# before the service starts - see the same note in restic-report.service.
+# With RESTIC_METRICS_TEXTFILE, add its directory here.
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/opt/restic/restic-cache /opt/restic/restic-tmp /var/log/restic
+
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

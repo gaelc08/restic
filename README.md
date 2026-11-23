@@ -33,6 +33,7 @@ resticctl list [flags...]       # list snapshots (restic snapshots flags)
 resticctl delete [flags...]     # remove snapshot(s), see below
 resticctl verify --target <path> [share-path]  # prove backups are actually restorable, see below
 resticctl report                # email the daily status digest, see below
+resticctl capacity-metrics      # export the repository/share sizes for capacity planning, see below
 resticctl version               # what commit is deployed
 resticctl status                # which shares are backing up now (with progress), which are idle, and when the next scheduled run is
 resticctl help
@@ -891,6 +892,61 @@ CDN - consistent with this host having no internet access):
 - The "Trier les shares par" dropdown reorders the share sections
   themselves, by name, snapshot count, or most recent backup date.
 
+## Capacity planning
+
+`bin/restic-capacity-metrics.sh` (`resticctl capacity-metrics`)
+exports the size of the repository and of every share as Prometheus
+metrics, for the capacity planning tool
+([storage_capacity_planning](https://github.com/gaelc08/storage_capacity_planning)),
+which reads everything from Prometheus / VictoriaMetrics. On manny-01
+it pushes them to the VictoriaMetrics installed next to the separate
+"backup" instance of capacity (see that repository's
+`deploy/backup/README.md`), which also gets the Cohesity clusters.
+
+| Metric | Labels | Source |
+|---|---|---|
+| `restic_repository_capacity_bytes` | `repository` | `RESTIC_CAPACITY_BYTES` in restic.env: the space granted (bucket quota, tapes set aside) |
+| `restic_repository_stored_bytes` | `repository` | the last prune in `maintenance.log`: `remaining` + `unused size after prune` |
+| `restic_repository_unused_bytes` | `repository` | `unused size after prune` (never repacked: `--max-repack-size 0`) |
+| `restic_repository_measured_timestamp_seconds` | `repository` | when that prune ran: an old value means maintenance stopped pruning |
+| `restic_share_size_bytes` | `repository`, `share`, `policy` | latest snapshot: `summary.total_bytes_processed` (logical size) |
+| `restic_share_added_bytes` | same | latest snapshot: `summary.data_added_packed` (what it added to the repository) |
+| `restic_share_last_snapshot_timestamp_seconds` | same | latest snapshot time |
+| `restic_capacity_timestamp_seconds` | `repository` | when the script ran |
+
+**It never reads archived data and never takes the lock.** The size of
+the repository is not computed here: `restic stats --mode raw-data`
+walks every snapshot tree, as costly as `restic check` (hours, see
+"Maintenance" above). The daily prune of `restic-maintenance.sh`
+already does that walk and prints the result (`remaining: N blobs /
+299.123 TiB`, `unused size after prune: ...`) into `maintenance.log`;
+the script reads the last one. The repository size is therefore the
+one of the last successful prune, once a day. The shares come from
+`restic snapshots --no-lock --json`, like the web report; snapshots
+made before restic 0.17 have no summary and are skipped. `share` is
+the basename of the mount point, as in the `share:` tag.
+
+```sh
+# restic.env: RESTIC_CAPACITY_BYTES="500TB" (update it when the space grows)
+#             RESTIC_METRICS_PUSH_URL="http://127.0.0.1:8428" (the default in restic.env.example)
+resticctl capacity-metrics --print                  # look first
+systemctl enable --now restic-capacity-metrics.timer   # hourly
+resticctl capacity-metrics --history                # once: push the past (see below)
+```
+
+`--history` pushes every past point it can find, with its timestamp:
+the repository size of every prune still in the maintenance logs (90
+days with the shipped logrotate config, compressed ones included) and
+the size of every share at every snapshot still in the repository.
+Then `capacity backfill` on the capacity side loads it. It needs a
+push to VictoriaMetrics: node_exporter's textfile collector
+(`RESTIC_METRICS_TEXTFILE`, the alternative to a push for the hourly
+run) refuses timestamps.
+
+A run with an error (restic snapshots failing, a push refused) exports
+what it could, exits 1 and writes `capacity-metrics.status` in
+`RESTIC_STATUS_DIR`, like the other jobs.
+
 ## Removing snapshots manually
 
 `restic-forget.sh` is a safety-wrapped `restic forget` for ad-hoc
@@ -1291,11 +1347,14 @@ single-share run - only the requested share's mount status is checked.
 ## Development
 
 CI (`.github/workflows/ci.yml`) runs shellcheck and `bash -n` on
-`install.sh` and every script in `bin/` on each push and pull request.
-To run the same locally:
+`install.sh` and every script in `bin/` on each push and pull request,
+and `tests/test-capacity-metrics.sh` (an end-to-end test of
+`restic-capacity-metrics.sh` with a fake `restic` and `curl` on PATH;
+needs `jq`). To run the same locally:
 
 ```sh
-shellcheck install.sh bin/*.sh bin/resticctl
+shellcheck install.sh bin/*.sh bin/resticctl tests/*.sh
+tests/test-capacity-metrics.sh
 ```
 
 `.shellcheckrc` makes shellcheck follow the `source` of

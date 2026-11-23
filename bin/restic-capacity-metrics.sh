@@ -1,0 +1,306 @@
+#!/usr/bin/env bash
+# Exports the capacity of the restic repository as Prometheus metrics,
+# for the capacity planning tool (storage_capacity_planning), which
+# reads everything from Prometheus / VictoriaMetrics:
+#
+#   restic_repository_capacity_bytes{repository}       RESTIC_CAPACITY_BYTES (restic.env): the space granted
+#   restic_repository_stored_bytes{repository}         what the repository takes (prune: remaining + unused)
+#   restic_repository_unused_bytes{repository}         of which unreferenced (never repacked: --max-repack-size 0)
+#   restic_repository_measured_timestamp_seconds       when that prune ran
+#   restic_share_size_bytes{repository,share,policy}   logical size of the share at its latest snapshot
+#   restic_share_added_bytes{repository,share,policy}  what that snapshot added to the repository (packed)
+#   restic_share_last_snapshot_timestamp_seconds{...}  when that snapshot was taken
+#   restic_capacity_timestamp_seconds{repository}      when this script ran
+#
+# It never reads archived (Glacier / tape) data and takes no repository
+# lock:
+#   - the repository size comes from the output the daily prune of
+#     restic-maintenance.sh already writes to maintenance.log (its
+#     "remaining:" and "unused size after prune:" lines). Computing it
+#     here (`restic stats --mode raw-data`) would walk every snapshot
+#     tree, as costly as `restic check`.
+#   - the shares come from `restic snapshots --no-lock --json` (the
+#     "summary" restic stores with each snapshot), like restic-webreport.sh.
+#
+# Usage:
+#   restic-capacity-metrics.sh            push to RESTIC_METRICS_PUSH_URL and/or write RESTIC_METRICS_TEXTFILE
+#                                         (print them when neither is set)
+#   restic-capacity-metrics.sh --print    print only
+#   restic-capacity-metrics.sh --history  also every past point: the repository size of every prune still in
+#                                         the maintenance logs (90 days of logrotate), the size of every share at
+#                                         every snapshot. Samples carry their timestamp: push only (VictoriaMetrics
+#                                         keeps it, node_exporter's textfile collector refuses it). Run once.
+#
+# Run hourly by restic-capacity-metrics.timer.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/restic-common.sh"
+
+LOG_FILE="${CAPACITY_METRICS_LOG_FILE:-${LOG_DIR}/capacity-metrics.log}"
+
+# The metrics may go to stdout: the log lines go to stderr (and the log file).
+log() {
+    local level="$1"; shift
+    local line
+    line="[$(date '+%Y-%m-%d %H:%M:%S%z')] [$level] $*"
+    echo "$line" >&2
+    [[ -n "${LOG_FILE:-}" ]] && echo "$line" >> "$LOG_FILE"
+}
+MAINTENANCE_LOG="${MAINTENANCE_LOG_FILE:-${LOG_DIR}/maintenance.log}"
+
+PRINT=0
+HISTORY=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --print) PRINT=1 ;;
+        --history) HISTORY=1 ;;
+        -h|--help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) die "unknown argument: $1 (see --help)" ;;
+    esac
+    shift
+done
+
+PUSH_URL="${RESTIC_METRICS_PUSH_URL:-}"
+TEXTFILE="${RESTIC_METRICS_TEXTFILE:-}"
+if (( PRINT )); then
+    PUSH_URL=""
+    TEXTFILE=""
+fi
+if (( HISTORY )) && [[ -n "$TEXTFILE" && -z "$PUSH_URL" ]]; then
+    die "--history needs RESTIC_METRICS_PUSH_URL (or --print): node_exporter's textfile collector refuses timestamps"
+fi
+(( HISTORY )) && TEXTFILE=""
+
+# The `repository` label: RESTIC_CAPACITY_REPOSITORY_NAME, or the
+# repository URL without its "s3:" and scheme.
+REPOSITORY_NAME="${RESTIC_CAPACITY_REPOSITORY_NAME:-$(sed -E 's#^s3:##; s#^https?://##' <<<"$RESTIC_REPOSITORY")}"
+
+# to_bytes <size> - "500TB" (decimal), "450TiB" (binary), "1.5 PiB",
+# or plain bytes -> bytes. Empty output when it cannot be read.
+to_bytes() {
+    awk -v s="$1" 'BEGIN {
+        gsub(/[[:space:]]/, "", s)
+        if (!match(s, /^[0-9]+(\.[0-9]+)?/)) exit
+        n = substr(s, 1, RLENGTH); u = toupper(substr(s, RLENGTH + 1))
+        split("K M G T P E", p, " ")
+        f = (u == "" || u == "B") ? 1 : 0
+        for (i = 1; i <= 6; i++) {
+            if (u == p[i] "IB") f = 1024 ^ i
+            if (u == p[i] "B")  f = 1000 ^ i
+        }
+        if (f) printf "%.0f\n", n * f
+    }'
+}
+
+# prune_sizes <log files, oldest first> - one "timestamp<TAB>remaining
+# bytes<TAB>unused bytes" line per prune found in the maintenance logs.
+# The timestamp is the one of the "running: restic prune" line; the
+# sizes are restic's own ("299.123 TiB": binary units).
+prune_sizes() {
+    local file
+    for file in "$@"; do
+        [[ -r "$file" ]] && zcat -f -- "$file"
+    done | awk '
+        function bytes(n, u,   i, units) {
+            split("B KiB MiB GiB TiB PiB EiB", units, " ")
+            for (i = 1; i <= 7; i++) if (u == units[i]) return n * 1024 ^ (i - 1)
+            return -1
+        }
+        /\] \[INFO\] running: restic prune/ {
+            ts = substr($0, 2, index($0, "]") - 2); remaining = ""; next
+        }
+        ts != "" && /^[[:space:]]*remaining:/ {
+            # remaining:   1234 blobs / 299.123 TiB
+            split($0, half, "/"); split(half[2], f, " ")
+            remaining = bytes(f[1], f[2]); next
+        }
+        ts != "" && remaining != "" && /^[[:space:]]*unused size after prune:/ {
+            sub(/^[[:space:]]*unused size after prune:[[:space:]]*/, "")
+            unused = bytes($1, $2)
+            if (remaining >= 0 && unused >= 0) printf "%s\t%.0f\t%.0f\n", ts, remaining, unused
+            ts = ""; remaining = ""
+        }'
+}
+
+# maintenance_logs [all] - the maintenance logs, oldest first: only the
+# last two (today's and yesterday's, rotated daily) unless "all".
+maintenance_logs() {
+    local rotated=()
+    # maintenance.log.N[.gz]: the highest N is the oldest.
+    mapfile -t rotated < <(compgen -G "${MAINTENANCE_LOG}.[0-9]*" \
+        | awk -v n="${#MAINTENANCE_LOG}" '{ k = substr($0, n + 2); sub(/[^0-9].*/, "", k); print k "\t" $0 }' \
+        | sort -k1,1nr | cut -f2-)
+    if [[ "${1:-}" != all ]]; then
+        rotated=("${rotated[@]: -1}")
+    fi
+    printf '%s\n' "${rotated[@]}" "$MAINTENANCE_LOG" | grep -v '^$'
+}
+
+# to_epochs - one date per line on stdin -> one epoch second per line
+# (an unreadable date gives an empty line, keeping the lines aligned).
+to_epochs() {
+    local line
+    while IFS= read -r line; do
+        date -d "$line" +%s 2>/dev/null || echo ""
+    done
+}
+
+label() {
+    local v="${1//\\/\\\\}"
+    printf '%s' "${v//\"/\\\"}"
+}
+
+declare -A SAMPLES=()
+METRIC_ORDER=()
+# sample <metric> <labels> <value> [timestamp ms]
+sample() {
+    local name="$1" labels="$2" value="$3" ts="${4:-}"
+    [[ -z "${SAMPLES[$name]+x}" ]] && METRIC_ORDER+=("$name") && SAMPLES[$name]=""
+    SAMPLES[$name]+="${name}{${labels}} ${value}${ts:+ $ts}"$'\n'
+}
+
+declare -A HELP=(
+    [restic_repository_capacity_bytes]="Space granted to the repository (RESTIC_CAPACITY_BYTES)."
+    [restic_repository_stored_bytes]="Space the repository takes: data still referenced plus unused, after the last prune."
+    [restic_repository_unused_bytes]="Unreferenced data left in the repository after the last prune."
+    [restic_repository_measured_timestamp_seconds]="When the prune that measured the repository ran."
+    [restic_share_size_bytes]="Logical size of the share at its latest snapshot (summary.total_bytes_processed)."
+    [restic_share_added_bytes]="Data the latest snapshot of the share added to the repository (summary.data_added_packed)."
+    [restic_share_last_snapshot_timestamp_seconds]="When the latest snapshot of the share was taken."
+    [restic_capacity_timestamp_seconds]="When the capacity metrics were read."
+)
+
+render() {
+    local name
+    for name in "${METRIC_ORDER[@]}"; do
+        printf '# HELP %s %s\n# TYPE %s gauge\n%s' "$name" "${HELP[$name]:-$name}" "$name" "${SAMPLES[$name]}"
+    done
+}
+
+log_info "===== restic capacity metrics starting (repository: ${REPOSITORY_NAME}) ====="
+FAILED=0
+REPO_LABEL="repository=\"$(label "$REPOSITORY_NAME")\""
+
+# --- the repository ---------------------------------------------------------
+
+if [[ -n "${RESTIC_CAPACITY_BYTES:-}" ]]; then
+    capacity="$(to_bytes "$RESTIC_CAPACITY_BYTES")"
+    if [[ -n "$capacity" ]]; then
+        sample restic_repository_capacity_bytes "$REPO_LABEL" "$capacity"
+    else
+        log_error "RESTIC_CAPACITY_BYTES='${RESTIC_CAPACITY_BYTES}' is not a size (e.g. 500TB, 450TiB or bytes)"
+        FAILED=1
+    fi
+else
+    log_warn "RESTIC_CAPACITY_BYTES is not set: no capacity, capacity planning will only follow the use"
+fi
+
+if (( HISTORY )); then
+    mapfile -t logs < <(maintenance_logs all)
+    mapfile -t prunes < <(prune_sizes "${logs[@]}")
+else
+    mapfile -t logs < <(maintenance_logs)
+    mapfile -t prunes < <(prune_sizes "${logs[@]}" | tail -n 1)
+fi
+if (( ${#prunes[@]} == 0 )); then
+    log_warn "no prune result in ${MAINTENANCE_LOG}* (restic-maintenance.sh has not run yet, or its prune failed): no repository size"
+else
+    mapfile -t prune_epochs < <(printf '%s\n' "${prunes[@]}" | cut -f1 | to_epochs)
+    for i in "${!prunes[@]}"; do
+        IFS=$'\t' read -r _ remaining unused <<<"${prunes[$i]}"
+        epoch="${prune_epochs[$i]}"
+        [[ -z "$epoch" ]] && continue
+        ts=""
+        (( HISTORY )) && ts="$(( epoch * 1000 ))"
+        sample restic_repository_stored_bytes "$REPO_LABEL" "$(( remaining + unused ))" "$ts"
+        sample restic_repository_unused_bytes "$REPO_LABEL" "$unused" "$ts"
+    done
+    sample restic_repository_measured_timestamp_seconds "$REPO_LABEL" "$epoch"
+    log_info "repository: $(( remaining + unused )) bytes stored ($unused unused), measured by the prune of $(date -d "@$epoch" '+%F %T')"
+fi
+
+# --- the shares --------------------------------------------------------------
+
+parse_shares_file
+declare -A POLICY_OF=()
+for i in "${!SHARE_PATHS[@]}"; do
+    POLICY_OF["${SHARE_PATHS[$i]}"]="${SHARE_POLICIES[$i]}"
+done
+
+# path, time, logical size, packed data added - for the snapshots that
+# carry a summary (restic 0.17+; older ones have none and are skipped).
+if snapshots_json="$(restic snapshots --no-lock "${RESTIC_GLOBAL_ARGS[@]}" --json 2>>"$LOG_FILE")"; then
+    mapfile -t rows < <(jq -r '.[]? | select(.summary != null and (.paths | length) > 0)
+        | [.paths[0], .time, (.summary.total_bytes_processed // ""),
+           (.summary.data_added_packed // .summary.data_added // "")] | @tsv' <<<"$snapshots_json")
+    mapfile -t row_epochs < <(printf '%s\n' "${rows[@]}" | cut -f2 | to_epochs)
+    declare -A LATEST=()          # path -> index in rows of its latest snapshot
+    for i in "${!rows[@]}"; do
+        IFS=$'\t' read -r path _ size added <<<"${rows[$i]}"
+        epoch="${row_epochs[$i]:-}"
+        [[ -z "${POLICY_OF[$path]+x}" || -z "$epoch" || -z "$size" ]] && continue
+        if (( HISTORY )); then
+            sample restic_share_size_bytes "${REPO_LABEL},share=\"$(label "$(basename "$path")")\",policy=\"$(label "${POLICY_OF[$path]}")\"" \
+                "$size" "$(( epoch * 1000 ))"
+        fi
+        if [[ -z "${LATEST[$path]+x}" ]] || (( epoch > ${row_epochs[${LATEST[$path]}]} )); then
+            LATEST[$path]="$i"
+        fi
+    done
+    for path in "${SHARE_PATHS[@]}"; do
+        if [[ -z "${LATEST[$path]+x}" ]]; then
+            log_warn "share $path: no snapshot with a summary yet"
+            continue
+        fi
+        i="${LATEST[$path]}"
+        IFS=$'\t' read -r _ _ size added <<<"${rows[$i]}"
+        labels="${REPO_LABEL},share=\"$(label "$(basename "$path")")\",policy=\"$(label "${POLICY_OF[$path]}")\""
+        (( HISTORY )) || sample restic_share_size_bytes "$labels" "$size"
+        [[ -n "$added" ]] && sample restic_share_added_bytes "$labels" "$added"
+        sample restic_share_last_snapshot_timestamp_seconds "$labels" "${row_epochs[$i]}"
+    done
+    log_info "shares: ${#LATEST[@]} of ${#SHARE_PATHS[@]} with a snapshot summary"
+else
+    log_error "restic snapshots failed (see ${LOG_FILE}): no share metrics"
+    FAILED=1
+fi
+
+sample restic_capacity_timestamp_seconds "$REPO_LABEL" "$(date +%s)"
+
+# --- output -------------------------------------------------------------------
+
+text="$(render)"
+if [[ -n "$TEXTFILE" ]]; then
+    # node_exporter must never read half a file: write next to it, then rename.
+    if ! { tmp="$(mktemp "$(dirname "$TEXTFILE")/.restic-capacity.XXXXXX")" \
+            && printf '%s\n' "$text" > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$TEXTFILE"; }; then
+        log_error "cannot write $TEXTFILE"
+        rm -f "${tmp:-}"
+        FAILED=1
+    fi
+fi
+if [[ -n "$PUSH_URL" ]]; then
+    curl_args=(-fsS -m 60 --data-binary @- -H 'Content-Type: text/plain')
+    [[ -n "${RESTIC_METRICS_PUSH_CA:-}" ]] && curl_args+=(--cacert "$RESTIC_METRICS_PUSH_CA")
+    if grep -v '^#' <<<"$text" | curl "${curl_args[@]}" "${PUSH_URL%/}/api/v1/import/prometheus" >>"$LOG_FILE" 2>&1; then
+        log_info "pushed $(grep -vc '^#' <<<"$text") samples to ${PUSH_URL}"
+    else
+        log_error "push to ${PUSH_URL} failed"
+        FAILED=1
+    fi
+fi
+if [[ -z "$TEXTFILE" && -z "$PUSH_URL" ]]; then
+    printf '%s\n' "$text"
+fi
+
+if (( FAILED )); then
+    write_status_file capacity-metrics failure "restic capacity metrics incomplete, see ${LOG_FILE}"
+    log_info "===== restic capacity metrics finished with errors ====="
+    exit 1
+fi
+write_status_file capacity-metrics success "restic capacity metrics exported"
+log_info "===== restic capacity metrics finished ====="
+exit 0

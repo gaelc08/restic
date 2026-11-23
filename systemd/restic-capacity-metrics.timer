@@ -1,0 +1,14 @@
+[Unit]
+Description=Export the restic repository capacity hourly
+
+[Timer]
+# Hourly, not daily: VictoriaMetrics only looks a limited time back
+# for the latest value of a series, and capacity planning reads it at
+# a fixed hour. The repository size itself changes once a day (it is
+# the one measured by the daily prune of restic-maintenance.sh).
+OnCalendar=*:20:00
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target
