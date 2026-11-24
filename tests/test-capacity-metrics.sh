@@ -101,6 +101,19 @@ check "logs on stderr, not in the metrics" lacks "$out" "[INFO]"
 check "share without snapshot reported" grep -q "share /mnt/new-share: no snapshot with a summary yet" "$WORK/stderr"
 check "status file" grep -q "STATUS=success" "$WORK/status/capacity-metrics.status"
 
+# --- daily change: the last 24 hours --------------------------------------------
+ARGS=(--print)
+out="$(run RESTIC_CAPACITY_NOW="$(date -d '2026-11-21T12:00:00+01:00' +%s)" 2>/dev/null)"
+check "change: data_added of the snapshots of the last 24 hours" \
+    has "$out" "restic_share_changed_bytes{$R,share=\"act_geoportal\",policy=\"long\"} 40"
+check "change: against the size at the latest of them" \
+    has "$out" "restic_share_protected_bytes{$R,share=\"act_geoportal\",policy=\"long\"} 1100"
+check "change: every share with a snapshot in the window" \
+    has "$out" "restic_share_changed_bytes{$R,share=\"ctie_sap\",policy=\"short\"} 70"
+check "change: no timestamp now" lacks "$out" "restic_share_changed_bytes{$R,share=\"ctie_sap\",policy=\"short\"} 70 "
+out="$(run RESTIC_CAPACITY_NOW="$(date -d '2026-11-25T12:00:00+01:00' +%s)" 2>/dev/null)"
+check "change: nothing when no snapshot in the last 24 hours" lacks "$out" "restic_share_changed_bytes"
+
 # --- history (push) ----------------------------------------------------------
 ARGS=(--history)
 run RESTIC_METRICS_PUSH_URL="http://127.0.0.1:8428/" 2>/dev/null; rc=$?
@@ -113,6 +126,10 @@ check "every prune, rotated and compressed logs included" \
 check "oldest prune, with its timestamp in ms" \
     has "$pushed" "restic_repository_stored_bytes{$R} $(( 100 * 1024 ** 4 + 1024 ** 3 )) $(( $(date -d '2026-11-19 18:00:05+0100' +%s) * 1000 ))"
 check "every snapshot with a summary" test "$(grep -c '^restic_share_size_bytes{' <<<"$pushed")" -eq 3
+check "history: the daily change of a day, stamped at its noon" \
+    has "$pushed" "restic_share_changed_bytes{$R,share=\"ctie_sap\",policy=\"short\"} 70 $(( $(date -d '2026-11-21 12:00' +%s) * 1000 ))"
+check "history: a snapshot without data_added gives no change" \
+    test "$(grep -c '^restic_share_changed_bytes{.*act_geoportal' <<<"$pushed")" -eq 1
 check "fractional seconds in the snapshot time" \
     has "$pushed" "restic_share_size_bytes{$R,share=\"act_geoportal\",policy=\"long\"} 1000 $(( $(date -d '2026-11-20T01:00:05+01:00' +%s) * 1000 ))"
 
