@@ -55,6 +55,12 @@ if git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     if ! git -C "$SCRIPT_DIR" diff --quiet 2>/dev/null || ! git -C "$SCRIPT_DIR" diff --cached --quiet 2>/dev/null; then
         GIT_DIRTY=" (with local uncommitted changes)"
     fi
+elif [[ -r "${SCRIPT_DIR}/VERSION.release" ]]; then
+    # A release bundle (storage_capacity_planning's deploy/backup/release.sh) is no git checkout: it carries the
+    # commit, branch and date in VERSION.release (KEY=value lines).
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/VERSION.release"
+    GIT_DIRTY=""
 else
     GIT_COMMIT="unknown (not a git checkout)"
     GIT_BRANCH="unknown"
