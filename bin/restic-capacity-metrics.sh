@@ -10,9 +10,11 @@
 #   restic_share_size_bytes{repository,share,policy}   logical size of the share at its latest snapshot
 #   restic_share_added_bytes{repository,share,policy}  what that snapshot added to the repository (packed)
 #   restic_share_last_snapshot_timestamp_seconds{...}  when that snapshot was taken
-#   restic_share_changed_bytes{repository,share,policy}    the daily change: what the snapshots of the last 24
-#                                                          hours added (summary.data_added, before compression)
+#   restic_share_changed_bytes{repository,share,policy}    the daily change: what the snapshots of a day (the 24
+#                                                          hours to noon, by their start) added (summary.data_added,
+#                                                          before compression), stamped at noon: the last 3 days
 #   restic_share_protected_bytes{repository,share,policy}  ... against the size of the share at the latest of them
+#                                                          (push only: node_exporter refuses timestamps)
 #   restic_capacity_timestamp_seconds{repository}      when this script ran
 #
 # It never reads archived (Glacier / tape) data and takes no repository
@@ -178,7 +180,7 @@ declare -A HELP=(
     [restic_share_size_bytes]="Logical size of the share at its latest snapshot (summary.total_bytes_processed)."
     [restic_share_added_bytes]="Data the latest snapshot of the share added to the repository (summary.data_added_packed)."
     [restic_share_last_snapshot_timestamp_seconds]="When the latest snapshot of the share was taken."
-    [restic_share_changed_bytes]="Data the snapshots of the share added in 24 hours (summary.data_added, before compression)."
+    [restic_share_changed_bytes]="Data the snapshots of the share added in a day to noon (summary.data_added, before compression)."
     [restic_share_protected_bytes]="Size of the share at the latest of those snapshots (the base of the daily change rate)."
     [restic_capacity_timestamp_seconds]="When the capacity metrics were read."
 )
@@ -275,23 +277,26 @@ if snapshots_json="$(restic snapshots --no-lock "${RESTIC_GLOBAL_ARGS[@]}" --jso
     done
     log_info "shares: ${#LATEST[@]} of ${#SHARE_PATHS[@]} with a snapshot summary"
 
-    # The daily change: per share, what its snapshots added in 24 hours
-    # against its size at the latest of them. Now: the last 24 hours.
-    # --history: every day, the 24 hours to noon, stamped at noon.
+    # The daily change: per share and per day - the 24 hours to noon, a
+    # snapshot counting in the day it started - what its snapshots added,
+    # against its size at the latest of them; stamped at noon. Every run
+    # gives the last CHANGE_DAYS complete days: a backup started at 20:00
+    # that ends the next morning completes its day when it appears.
+    # --history: every complete day still in the repository.
+    CHANGE_DAYS=3
     declare -A CHANGED=() PROTECTED=() PROTECTED_AT=() NOON_OF=()
     now="${RESTIC_CAPACITY_NOW:-$(date +%s)}"                  # (fixed by the tests)
     for i in "${!rows[@]}"; do
         IFS=$'\t' read -r path _ size _ added_raw <<<"${rows[$i]}"
         epoch="${row_epochs[$i]:-}"
         [[ -z "${POLICY_OF[$path]+x}" || -z "$epoch" || -z "$size" || -z "$added_raw" ]] && continue
-        if (( HISTORY )); then
-            day="$(date -d "@$(( epoch + 43199 ))" +%F)"        # (noon the day before, noon] belongs to that day
-            [[ -z "${NOON_OF[$day]+x}" ]] && NOON_OF[$day]="$(date -d "$day 12:00" +%s)"
-            key="${path}|${NOON_OF[$day]}"
-        else
-            (( epoch > now - 86400 )) || continue
-            key="${path}|"
-        fi
+        (( HISTORY || epoch > now - (CHANGE_DAYS + 1) * 86400 )) || continue
+        day="$(date -d "@$(( epoch + 43199 ))" +%F)"            # (noon the day before, noon] belongs to that day
+        [[ -z "${NOON_OF[$day]+x}" ]] && NOON_OF[$day]="$(date -d "$day 12:00" +%s)"
+        noon="${NOON_OF[$day]}"
+        (( noon <= now )) || continue                              # its day is not over yet
+        (( HISTORY || noon > now - CHANGE_DAYS * 86400 )) || continue
+        key="${path}|${noon}"
         CHANGED[$key]=$(( ${CHANGED[$key]:-0} + added_raw ))
         if [[ -z "${PROTECTED_AT[$key]+x}" ]] || (( epoch > ${PROTECTED_AT[$key]} )); then
             PROTECTED_AT[$key]="$epoch"
@@ -301,10 +306,8 @@ if snapshots_json="$(restic snapshots --no-lock "${RESTIC_GLOBAL_ARGS[@]}" --jso
     for key in "${!CHANGED[@]}"; do
         path="${key%|*}" noon="${key##*|}"
         labels="${REPO_LABEL},share=\"$(label "$(basename "$path")")\",policy=\"$(label "${POLICY_OF[$path]}")\""
-        ts=""
-        [[ -n "$noon" ]] && ts="$(( noon * 1000 ))"
-        sample restic_share_changed_bytes "$labels" "${CHANGED[$key]}" "$ts"
-        sample restic_share_protected_bytes "$labels" "${PROTECTED[$key]}" "$ts"
+        sample restic_share_changed_bytes "$labels" "${CHANGED[$key]}" "$(( noon * 1000 ))"
+        sample restic_share_protected_bytes "$labels" "${PROTECTED[$key]}" "$(( noon * 1000 ))"
     done
 else
     log_error "restic snapshots failed (see ${LOG_FILE}): no share metrics"
@@ -317,9 +320,11 @@ sample restic_capacity_timestamp_seconds "$REPO_LABEL" "$(date +%s)"
 
 text="$(render)"
 if [[ -n "$TEXTFILE" ]]; then
+    # node_exporter refuses timestamps: the daily change (stamped at noon) only goes to VictoriaMetrics.
+    textfile_text="$(grep -v -E '^restic_share_(changed|protected)_bytes\{' <<<"$text")"
     # node_exporter must never read half a file: write next to it, then rename.
     if ! { tmp="$(mktemp "$(dirname "$TEXTFILE")/.restic-capacity.XXXXXX")" \
-            && printf '%s\n' "$text" > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$TEXTFILE"; }; then
+            && printf '%s\n' "$textfile_text" > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$TEXTFILE"; }; then
         log_error "cannot write $TEXTFILE"
         rm -f "${tmp:-}"
         FAILED=1

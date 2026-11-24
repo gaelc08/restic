@@ -912,7 +912,7 @@ it pushes them to the VictoriaMetrics installed next to the separate
 | `restic_share_size_bytes` | `repository`, `share`, `policy` | latest snapshot: `summary.total_bytes_processed` (logical size) |
 | `restic_share_added_bytes` | same | latest snapshot: `summary.data_added_packed` (what it added to the repository) |
 | `restic_share_last_snapshot_timestamp_seconds` | same | latest snapshot time |
-| `restic_share_changed_bytes` | same | the daily change: what the snapshots of the last 24 hours added (`summary.data_added`, before compression) |
+| `restic_share_changed_bytes` | same | the daily change: what the snapshots of a day added (`summary.data_added`, before compression); a day is the 24 hours to noon, a snapshot counts in the day it started, and the value is stamped at noon. Every run gives the last 3 complete days, so that a backup that ends the next morning completes its day. Push only: node_exporter refuses timestamps, so it is left out of `RESTIC_METRICS_TEXTFILE` |
 | `restic_share_protected_bytes` | same | the size of the share at the latest of them: the base of the daily change rate (capacity's Change rate tab) |
 | `restic_capacity_timestamp_seconds` | `repository` | when the script ran |
 

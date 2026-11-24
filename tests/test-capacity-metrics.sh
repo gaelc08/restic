@@ -96,23 +96,28 @@ check "data_added when no packed size" has "$out" "restic_share_added_bytes{$R,s
 check "snapshot time" has "$out" "restic_share_last_snapshot_timestamp_seconds{$R,share=\"ctie_sap\",policy=\"short\"} $(date -d '2026-11-21T02:00:00+01:00' +%s)"
 check "share no longer configured left out" lacks "$out" 'share="gone"'
 check "HELP and TYPE" has "$out" "# TYPE restic_share_size_bytes gauge"
-check "no timestamps outside --history" lacks "$out" "} 1100 "
+check "no timestamps outside --history (but for the daily change)" \
+    has "$out" "restic_share_size_bytes{$R,share=\"act_geoportal\",policy=\"long\"} 1100"
 check "logs on stderr, not in the metrics" lacks "$out" "[INFO]"
 check "share without snapshot reported" grep -q "share /mnt/new-share: no snapshot with a summary yet" "$WORK/stderr"
 check "status file" grep -q "STATUS=success" "$WORK/status/capacity-metrics.status"
 
-# --- daily change: the last 24 hours --------------------------------------------
+# --- daily change: the last complete days, stamped at noon -------------------------
+NOON21="$(( $(date -d '2026-11-21 12:00' +%s) * 1000 ))"
 ARGS=(--print)
-out="$(run RESTIC_CAPACITY_NOW="$(date -d '2026-11-21T12:00:00+01:00' +%s)" 2>/dev/null)"
-check "change: data_added of the snapshots of the last 24 hours" \
-    has "$out" "restic_share_changed_bytes{$R,share=\"act_geoportal\",policy=\"long\"} 40"
+out="$(run RESTIC_CAPACITY_NOW="$(date -d '2026-11-21 12:30' +%s)" 2>/dev/null)"
+check "change: data_added of the snapshots of the day, stamped at its noon" \
+    has "$out" "restic_share_changed_bytes{$R,share=\"act_geoportal\",policy=\"long\"} 40 $NOON21"
 check "change: against the size at the latest of them" \
-    has "$out" "restic_share_protected_bytes{$R,share=\"act_geoportal\",policy=\"long\"} 1100"
-check "change: every share with a snapshot in the window" \
-    has "$out" "restic_share_changed_bytes{$R,share=\"ctie_sap\",policy=\"short\"} 70"
-check "change: no timestamp now" lacks "$out" "restic_share_changed_bytes{$R,share=\"ctie_sap\",policy=\"short\"} 70 "
-out="$(run RESTIC_CAPACITY_NOW="$(date -d '2026-11-25T12:00:00+01:00' +%s)" 2>/dev/null)"
-check "change: nothing when no snapshot in the last 24 hours" lacks "$out" "restic_share_changed_bytes"
+    has "$out" "restic_share_protected_bytes{$R,share=\"act_geoportal\",policy=\"long\"} 1100 $NOON21"
+check "change: every share with a snapshot that day" \
+    has "$out" "restic_share_changed_bytes{$R,share=\"ctie_sap\",policy=\"short\"} 70 $NOON21"
+out="$(run RESTIC_CAPACITY_NOW="$(date -d '2026-11-21 11:00' +%s)" 2>/dev/null)"
+check "change: a day not over yet (before its noon) is not given" lacks "$out" "restic_share_changed_bytes"
+out="$(run RESTIC_CAPACITY_NOW="$(date -d '2026-11-23 11:00' +%s)" 2>/dev/null)"
+check "change: still given while one of the last 3 complete days" has "$out" "restic_share_changed_bytes{$R,share=\"ctie_sap\",policy=\"short\"} 70 $NOON21"
+out="$(run RESTIC_CAPACITY_NOW="$(date -d '2026-11-25 12:30' +%s)" 2>/dev/null)"
+check "change: no longer after 3 days (the history has it)" lacks "$out" "restic_share_changed_bytes"
 
 # --- history (push) ----------------------------------------------------------
 ARGS=(--history)
@@ -143,8 +148,9 @@ ARGS=(--history)
 run RESTIC_METRICS_TEXTFILE="$WORK/x.prom" >/dev/null 2>&1; rc=$?
 check "--history refuses the textfile collector" test "$rc" -eq 1
 ARGS=()
-run RESTIC_METRICS_TEXTFILE="$WORK/restic.prom" 2>/dev/null; rc=$?
+run RESTIC_METRICS_TEXTFILE="$WORK/restic.prom" RESTIC_CAPACITY_NOW="$(date -d '2026-11-21 12:30' +%s)" 2>/dev/null; rc=$?
 check "textfile written" grep -q "^restic_share_size_bytes{" "$WORK/restic.prom"
+check "textfile: no daily change (timestamps)" bash -c "! grep -q '^restic_share_changed_bytes' '$WORK/restic.prom'"
 
 # --- logrotate's dateext (RHEL's default): maintenance.log-YYYYMMDD[.gz] ------
 mv "$WORK/log/maintenance.log.2.gz" "$WORK/log/maintenance.log-20261120.gz"
