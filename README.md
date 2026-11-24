@@ -912,6 +912,8 @@ it pushes them to the VictoriaMetrics installed next to the separate
 | `restic_share_size_bytes` | `repository`, `share`, `policy` | latest snapshot: `summary.total_bytes_processed` (logical size) |
 | `restic_share_added_bytes` | same | latest snapshot: `summary.data_added_packed` (what it added to the repository) |
 | `restic_share_last_snapshot_timestamp_seconds` | same | latest snapshot time |
+| `restic_share_changed_bytes` | same | the daily change: what the snapshots of the last 24 hours added (`summary.data_added`, before compression) |
+| `restic_share_protected_bytes` | same | the size of the share at the latest of them: the base of the daily change rate (capacity's Change rate tab) |
 | `restic_capacity_timestamp_seconds` | `repository` | when the script ran |
 
 **It never reads archived data and never takes the lock.** The size of
@@ -937,7 +939,9 @@ resticctl capacity-metrics --history                # once: push the past (see b
 `--history` pushes every past point it can find, with its timestamp:
 the repository size of every prune still in the maintenance logs (90
 days with the shipped logrotate config, compressed ones included) and
-the size of every share at every snapshot still in the repository.
+the size of every share at every snapshot still in the repository, and
+its daily change for every day (the 24 hours to noon, stamped at noon,
+the time at which `capacity backfill` reads a day).
 Then `capacity backfill` on the capacity side loads it. It needs a
 push to VictoriaMetrics: node_exporter's textfile collector
 (`RESTIC_METRICS_TEXTFILE`, the alternative to a push for the hourly

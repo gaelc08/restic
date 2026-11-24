@@ -10,6 +10,9 @@
 #   restic_share_size_bytes{repository,share,policy}   logical size of the share at its latest snapshot
 #   restic_share_added_bytes{repository,share,policy}  what that snapshot added to the repository (packed)
 #   restic_share_last_snapshot_timestamp_seconds{...}  when that snapshot was taken
+#   restic_share_changed_bytes{repository,share,policy}    the daily change: what the snapshots of the last 24
+#                                                          hours added (summary.data_added, before compression)
+#   restic_share_protected_bytes{repository,share,policy}  ... against the size of the share at the latest of them
 #   restic_capacity_timestamp_seconds{repository}      when this script ran
 #
 # It never reads archived (Glacier / tape) data and takes no repository
@@ -28,7 +31,9 @@
 #   restic-capacity-metrics.sh --print    print only
 #   restic-capacity-metrics.sh --history  also every past point: the repository size of every prune still in
 #                                         the maintenance logs (90 days of logrotate), the size of every share at
-#                                         every snapshot. Samples carry their timestamp: push only (VictoriaMetrics
+#                                         every snapshot, and the daily change of every day (the 24 hours to noon,
+#                                         at noon: when capacity backfill reads a day). Samples carry their
+#                                         timestamp: push only (VictoriaMetrics
 #                                         keeps it, node_exporter's textfile collector refuses it). Run once.
 #
 # Run hourly by restic-capacity-metrics.timer.
@@ -173,6 +178,8 @@ declare -A HELP=(
     [restic_share_size_bytes]="Logical size of the share at its latest snapshot (summary.total_bytes_processed)."
     [restic_share_added_bytes]="Data the latest snapshot of the share added to the repository (summary.data_added_packed)."
     [restic_share_last_snapshot_timestamp_seconds]="When the latest snapshot of the share was taken."
+    [restic_share_changed_bytes]="Data the snapshots of the share added in 24 hours (summary.data_added, before compression)."
+    [restic_share_protected_bytes]="Size of the share at the latest of those snapshots (the base of the daily change rate)."
     [restic_capacity_timestamp_seconds]="When the capacity metrics were read."
 )
 
@@ -233,16 +240,17 @@ for i in "${!SHARE_PATHS[@]}"; do
     POLICY_OF["${SHARE_PATHS[$i]}"]="${SHARE_POLICIES[$i]}"
 done
 
-# path, time, logical size, packed data added - for the snapshots that
-# carry a summary (restic 0.17+; older ones have none and are skipped).
+# path, time, logical size, data added packed, data added before
+# compression - for the snapshots that carry a summary (restic 0.17+;
+# older ones have none and are skipped).
 if snapshots_json="$(restic snapshots --no-lock "${RESTIC_GLOBAL_ARGS[@]}" --json 2>>"$LOG_FILE")"; then
     mapfile -t rows < <(jq -r '.[]? | select(.summary != null and (.paths | length) > 0)
         | [.paths[0], .time, (.summary.total_bytes_processed // ""),
-           (.summary.data_added_packed // .summary.data_added // "")] | @tsv' <<<"$snapshots_json")
+           (.summary.data_added_packed // .summary.data_added // ""), (.summary.data_added // "")] | @tsv' <<<"$snapshots_json")
     mapfile -t row_epochs < <(printf '%s\n' "${rows[@]}" | cut -f2 | to_epochs)
     declare -A LATEST=()          # path -> index in rows of its latest snapshot
     for i in "${!rows[@]}"; do
-        IFS=$'\t' read -r path _ size added <<<"${rows[$i]}"
+        IFS=$'\t' read -r path _ size added _ <<<"${rows[$i]}"
         epoch="${row_epochs[$i]:-}"
         [[ -z "${POLICY_OF[$path]+x}" || -z "$epoch" || -z "$size" ]] && continue
         if (( HISTORY )); then
@@ -259,13 +267,45 @@ if snapshots_json="$(restic snapshots --no-lock "${RESTIC_GLOBAL_ARGS[@]}" --jso
             continue
         fi
         i="${LATEST[$path]}"
-        IFS=$'\t' read -r _ _ size added <<<"${rows[$i]}"
+        IFS=$'\t' read -r _ _ size added _ <<<"${rows[$i]}"
         labels="${REPO_LABEL},share=\"$(label "$(basename "$path")")\",policy=\"$(label "${POLICY_OF[$path]}")\""
         (( HISTORY )) || sample restic_share_size_bytes "$labels" "$size"
         [[ -n "$added" ]] && sample restic_share_added_bytes "$labels" "$added"
         sample restic_share_last_snapshot_timestamp_seconds "$labels" "${row_epochs[$i]}"
     done
     log_info "shares: ${#LATEST[@]} of ${#SHARE_PATHS[@]} with a snapshot summary"
+
+    # The daily change: per share, what its snapshots added in 24 hours
+    # against its size at the latest of them. Now: the last 24 hours.
+    # --history: every day, the 24 hours to noon, stamped at noon.
+    declare -A CHANGED=() PROTECTED=() PROTECTED_AT=() NOON_OF=()
+    now="${RESTIC_CAPACITY_NOW:-$(date +%s)}"                  # (fixed by the tests)
+    for i in "${!rows[@]}"; do
+        IFS=$'\t' read -r path _ size _ added_raw <<<"${rows[$i]}"
+        epoch="${row_epochs[$i]:-}"
+        [[ -z "${POLICY_OF[$path]+x}" || -z "$epoch" || -z "$size" || -z "$added_raw" ]] && continue
+        if (( HISTORY )); then
+            day="$(date -d "@$(( epoch + 43199 ))" +%F)"        # (noon the day before, noon] belongs to that day
+            [[ -z "${NOON_OF[$day]+x}" ]] && NOON_OF[$day]="$(date -d "$day 12:00" +%s)"
+            key="${path}|${NOON_OF[$day]}"
+        else
+            (( epoch > now - 86400 )) || continue
+            key="${path}|"
+        fi
+        CHANGED[$key]=$(( ${CHANGED[$key]:-0} + added_raw ))
+        if [[ -z "${PROTECTED_AT[$key]+x}" ]] || (( epoch > ${PROTECTED_AT[$key]} )); then
+            PROTECTED_AT[$key]="$epoch"
+            PROTECTED[$key]="$size"
+        fi
+    done
+    for key in "${!CHANGED[@]}"; do
+        path="${key%|*}" noon="${key##*|}"
+        labels="${REPO_LABEL},share=\"$(label "$(basename "$path")")\",policy=\"$(label "${POLICY_OF[$path]}")\""
+        ts=""
+        [[ -n "$noon" ]] && ts="$(( noon * 1000 ))"
+        sample restic_share_changed_bytes "$labels" "${CHANGED[$key]}" "$ts"
+        sample restic_share_protected_bytes "$labels" "${PROTECTED[$key]}" "$ts"
+    done
 else
     log_error "restic snapshots failed (see ${LOG_FILE}): no share metrics"
     FAILED=1
